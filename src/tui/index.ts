@@ -13,9 +13,11 @@ export function createTuiPlugin(module: Core): PluginNamespace.Definition {
   return {
     id: "opencode-gpt-live.tui",
     setup(context: Context) {
-      const options = context.options as { voice?: string; panel?: boolean }
+      const options = context.options as { voice?: string; panel?: boolean; duck?: boolean }
       const voice = new VoiceController(context, {
         voice: VOICES.includes(options.voice as Voice) ? (options.voice as Voice) : undefined,
+        // Other apps' audio is turned down during calls and restored afterwards.
+        duck: options.duck !== false,
       })
       const frames = new Frames(voice)
       const autoPanel = options.panel !== false

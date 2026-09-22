@@ -4,6 +4,7 @@
 //! the plugin exchanges the SDP offer for an answer and passes the answer back.
 
 mod audio;
+mod duck;
 mod protocol;
 mod transport;
 
@@ -113,6 +114,8 @@ struct Session {
     pending: Option<Pending>,
     engine: Option<Engine>,
     muted: bool,
+    /// Other apps' audio lowered for the call, restored when dropped.
+    ducking: Option<duck::Ducking>,
 }
 
 /// Resources created by `start` and consumed once the answer connects.
@@ -130,9 +133,16 @@ impl Session {
         emitter: &Emitter,
     ) -> anyhow::Result<()> {
         match command {
-            Command::Start { input, output } => {
+            Command::Start {
+                input,
+                output,
+                duck_others,
+            } => {
                 if self.transport.is_some() {
                     anyhow::bail!("session already started");
+                }
+                if duck_others && self.ducking.is_none() {
+                    self.ducking = duck::Ducking::start();
                 }
                 let input = match &input {
                     InputSpec::File { .. } => InputKind::File(input.file().unwrap_or_default().into()),
@@ -213,5 +223,6 @@ impl Session {
         if let Some(transport) = self.transport.take() {
             runtime.block_on(transport.close());
         }
+        self.ducking.take();
     }
 }

@@ -188,13 +188,14 @@ export class HelperProcess {
     stdin.flush()
   }
 
-  async start(options: { input?: unknown; output?: unknown } = {}): Promise<string> {
+  async start(options: { input?: unknown; output?: unknown; duck?: boolean } = {}): Promise<string> {
     await this.ready
     const offer = this.expect("offer")
     this.send({
       type: "start",
       ...(options.input ? { input: options.input } : {}),
       ...(options.output ? { output: options.output } : {}),
+      ...(options.duck ? { duckOthers: true } : {}),
     })
     return String((await offer).sdp)
   }

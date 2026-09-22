@@ -80,7 +80,7 @@ export class VoiceController {
 
   constructor(
     private readonly context: Context,
-    private readonly options: { voice?: Voice },
+    private readonly options: { voice?: Voice; duck?: boolean },
   ) {
     this.subscribe()
   }
@@ -192,6 +192,7 @@ export class VoiceController {
       const offer = await helper.start({
         input: inputFile ? { file: inputFile } : undefined,
         output: output ? (output === "none" ? "none" : { file: output }) : undefined,
+        duck: this.options.duck,
       })
       const call = await this.rpc().start(
         { sessionID, sdp: offer, voice: voice ?? this.options.voice, fresh },

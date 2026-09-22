@@ -42,10 +42,10 @@ interface Strand {
 }
 
 const STRANDS: readonly Strand[] = [
-  { userWaves: [6, 9], assistantWaves: [2, 3], phase: 0.0, offset: 0.0, weight: 1.0 },
-  { userWaves: [7, 11], assistantWaves: [3, 4], phase: 2.1, offset: 0.035, weight: 0.8 },
-  { userWaves: [5, 8], assistantWaves: [2, 5], phase: 4.3, offset: -0.03, weight: 0.7 },
-  { userWaves: [8, 13], assistantWaves: [4, 3], phase: 1.2, offset: 0.015, weight: 0.55 },
+  { userWaves: [4, 6], assistantWaves: [2, 3], phase: 0.0, offset: 0.0, weight: 1.0 },
+  { userWaves: [5, 7], assistantWaves: [3, 4], phase: 2.1, offset: 0.035, weight: 0.8 },
+  { userWaves: [4, 5], assistantWaves: [2, 5], phase: 4.3, offset: -0.03, weight: 0.7 },
+  { userWaves: [5, 8], assistantWaves: [4, 3], phase: 1.2, offset: 0.015, weight: 0.55 },
 ]
 const BUCKETS = 720
 const TAU = Math.PI * 2
@@ -106,7 +106,7 @@ export class AuraCanvas {
 
     // Geometry reacts to the voice.
     const radius = extent * (connecting ? 0.46 : 0.5) * (1 + 0.05 * breath + 0.16 * level)
-    const ripple = (connecting ? 0.03 : 0.018) + 0.11 * level
+    const ripple = (connecting ? 0.03 : 0.018) + 0.09 * level
     const thickness = extent * (0.035 + 0.05 * level)
     const glowWidth = extent * (0.08 + 0.1 * level)
     // You spin counter-clockwise, GPT-Live clockwise; faster when louder.
@@ -141,7 +141,10 @@ export class AuraCanvas {
         const userShape = 0.6 * Math.sin(u1 * angle + flow + strand.phase) + 0.4 * Math.sin(u2 * angle - flow * 1.3)
         const assistantShape =
           0.65 * Math.sin(a1 * angle - flow * 0.6 + strand.phase) + 0.35 * Math.sin(a2 * angle + flow * 0.4)
-        const shape = userShape * (1 - speaker) + assistantShape * speaker
+        const mixed = userShape * (1 - speaker) + assistantShape * speaker
+        // Swell outward, barely dip inward: inward dents read as sharp spikes.
+        // (A smooth blend of x and |x|: about 1 at x = 1 and -0.35 at x = -1, with no crease at 0.)
+        const shape = 0.675 * mixed + 0.325 * Math.sqrt(mixed * mixed + 0.04)
         const rim = radius * (1 + strand.offset * (0.9 + level) + ripple * shape)
         const j = k * count + s
         this.rim[j] = rim

@@ -17,6 +17,9 @@ pub enum Command {
         input: InputSpec,
         #[serde(default)]
         output: OutputSpec,
+        /// Lower other apps' audio for the length of the call.
+        #[serde(default, rename = "duckOthers")]
+        duck_others: bool,
     },
     /// Apply the SDP answer from GPT-Live and start audio once connected.
     Answer { sdp: String },
