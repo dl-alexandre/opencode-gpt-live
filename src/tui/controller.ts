@@ -151,12 +151,6 @@ export class VoiceController {
   private markLive() {
     this.set({ phase: "live", liveAt: Date.now() })
     this.notice('Connected. Start talking. Say "end the call" or press F8 to hang up.', "info")
-    this.context.ui.toast.show({
-      title: "GPT-Live · you're live",
-      message: 'Start talking. Say "end the call", press F8, or run /voice to hang up.',
-      variant: "success",
-      duration: 5000,
-    })
   }
 
   async start(sessionID: string, voice?: Voice, fresh = false) {
@@ -172,7 +166,6 @@ export class VoiceController {
       revision: this.state.revision,
     })
     this.notice("Connecting to GPT-Live…", "info")
-    this.context.ui.toast.show({ title: "GPT-Live", message: "Starting voice call…", variant: "info", duration: 3000 })
     try {
       const binary = await ensureHelper((message) => this.context.ui.toast.show({ message, variant: "info" }))
       const helper = new HelperProcess(binary, {

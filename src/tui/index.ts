@@ -27,19 +27,47 @@ export function createTuiPlugin(module: Core): PluginNamespace.Definition {
         return route.type === "session" ? route.sessionID : undefined
       }
 
-      const start = async (chosen?: Voice, fresh = false) => {
-        const sessionID = currentSession()
-        if (!sessionID) {
+      // With no session open (e.g. on the home screen), a call starts in a new session.
+      const openNewSession = async () => {
+        try {
+          const location = context.location ?? context.data.location.default()
+          const created = await context.client.session.create({ location })
+          const previous = context.renderer.currentFocusedEditor
+          context.ui.router.navigate({ type: "session", sessionID: created.id })
+          // Wait for the new session's prompt to mount and take focus, so opening the panel
+          // hands focus back to it rather than to the home screen's (now gone) prompt.
+          const ready = () => {
+            const editor = context.renderer.currentFocusedEditor
+            return currentSession() === created.id && editor && editor !== previous && !editor.isDestroyed
+          }
+          for (let i = 0; i < 80 && !ready(); i++) await Bun.sleep(25)
+          return created.id
+        } catch (error) {
           context.ui.toast.show({
             title: "GPT-Live",
-            message: "Open a session first, then start voice.",
-            variant: "warning",
+            message: `Could not start a new session: ${error instanceof Error ? error.message : String(error)}`,
+            variant: "error",
           })
-          return
+          return undefined
         }
+      }
+
+      const start = async (chosen?: Voice, fresh = false) => {
+        const sessionID = currentSession() ?? (await openNewSession())
+        if (!sessionID) return
         if (autoPanel) openPanelKeepingFocus()
         await voice.start(sessionID, chosen, fresh)
       }
+
+      // Close the transcript panel when a call ends normally; keep it open after a failure
+      // so the error stays readable.
+      let wasActive = false
+      const stopWatchingCall = voice.onChange(() => {
+        const active = voice.active
+        if (wasActive && !active && voice.state.phase === "idle" && context.ui.panel.current()?.name === PANEL)
+          context.ui.panel.close()
+        wasActive = active
+      })
 
       // Opening a panel moves keyboard focus into it; hand focus back so typing still goes
       // to the prompt during a call.
@@ -203,6 +231,7 @@ export function createTuiPlugin(module: Core): PluginNamespace.Definition {
 
       return async () => {
         if (autostart) clearInterval(autostart)
+        stopWatchingCall()
         for (const dispose of disposers) dispose()
         await voice.dispose()
         frames.dispose()
