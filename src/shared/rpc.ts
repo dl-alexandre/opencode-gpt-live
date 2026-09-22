@@ -64,6 +64,11 @@ export const GptLive = define({
         voiceSessionID: z.string().optional(),
       }),
     },
+    /** Heartbeat from the window that owns the call; calls whose window goes quiet are ended. */
+    alive: {
+      input: z.object({ callID: z.string() }),
+      output: z.object({ active: z.boolean() }),
+    },
     say: {
       input: z.object({ callID: z.string(), text: z.string() }),
       output: z.object({ sent: z.boolean() }),

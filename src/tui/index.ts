@@ -1,7 +1,7 @@
 import type { Plugin as PluginNamespace } from "@opencode/plugin/tui"
 import { VOICES, type Voice } from "../shared/rpc"
 import { VoiceController } from "./controller"
-import { Frames, footerBadge, transcriptPanel, useCore, voiceStrip, type Core, type View } from "./ui"
+import { Frames, footerBadge, transcriptPanel, useCore, voiceAura, voiceStrip, type Core, type View } from "./ui"
 
 const PANEL = "gptlive.transcript"
 
@@ -155,18 +155,28 @@ export function createTuiPlugin(module: Core): PluginNamespace.Definition {
         context.ui.slot({
           append: "session.panel",
           render: (panel) => {
-            const view = transcriptPanel(context, voice)
+            const open = () => panel.name === PANEL
+            const view = transcriptPanel(context, voice, () => open() && voice.owns(panel.sessionID))
             const gated: View = {
               root: view.root,
-              animating: (now) => panel.name === PANEL && view.animating(now),
+              animating: (now) => open() && view.animating(now),
+              interval: view.interval,
+              suspend: view.suspend,
+              dispose: view.dispose,
               update(now) {
-                const show = panel.name === PANEL
+                const show = open()
                 if (view.root.visible !== show) view.root.visible = show
                 if (show) view.update(now)
+                else view.suspend?.()
               },
             }
             return frames.mount(gated)
           },
+        }),
+        context.ui.slot({
+          prepend: "sidebar.content",
+          render: (input) =>
+            frames.mount(voiceAura(context, voice, () => voice.owns(input.sessionID), "gptlive-aura-sidebar")),
         }),
         context.ui.slot({
           append: "prompt.footer.status",

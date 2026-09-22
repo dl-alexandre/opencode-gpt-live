@@ -25,7 +25,13 @@ interface Call {
   prompt: string
   bridge?: Bridge
   sideband?: Sideband
+  /** Last heartbeat from the window that owns the call. */
+  seenAt: number
+  end(reason?: string): void
 }
+
+/** A call whose window has not checked in for this long is treated as abandoned. */
+const ORPHAN_AFTER = 20_000
 
 const TOOL_PREFIX = "gptlive_"
 /** Finished turns remembered per voice session for the next call's context. */
@@ -62,6 +68,12 @@ export default Plugin.define({
     const defaultVoice: Voice = VOICES.includes(options.voice as Voice) ? (options.voice as Voice) : "cove"
     const voiceModel = parseModel(options.voiceModel ?? "openai/gpt-6-sol", options.voiceVariant ?? "medium")
     let active: Call | undefined
+    // Calls outlive a window that crashes or is killed (the server is shared), so the
+    // window sends heartbeats and abandoned calls are ended rather than left running.
+    const reaper = setInterval(() => {
+      if (active && Date.now() - active.seenAt > ORPHAN_AFTER) active.end("The window that started the call closed")
+    }, 5_000)
+    reaper.unref?.()
 
     const bridgeFor = (sessionID: string) =>
       active?.bridge && active.voiceSessionID === sessionID ? active.bridge : undefined
@@ -206,7 +218,9 @@ export default Plugin.define({
       },
 
       start: async (input, { signal, error }) => {
-        if (active) return error("busy", "A voice call is already active", { callID: active.callID })
+        // Starting a call while another is still up (typically from a window that went away)
+        // moves the call here.
+        active?.end("Moved to another window")
         const auth = await resolveAuth(ctx)
         if (!auth.ok) return error("not_signed_in", auth.reason, { reason: auth.reason })
 
@@ -278,6 +292,14 @@ export default Plugin.define({
           sessionID: input.sessionID,
           voiceSessionID: voiceSession.id,
           prompt,
+          seenAt: Date.now(),
+          end: (reason) => {
+            if (active !== entry) return
+            active = undefined
+            entry.bridge?.close()
+            entry.sideband?.close()
+            emitState("closed", reason)
+          },
         }
         active = entry
         const emitState = (state: "connecting" | "live" | "closed" | "error", message?: string) =>
@@ -370,12 +392,14 @@ export default Plugin.define({
 
       stop: async (input) => {
         if (!active || active.callID !== input.callID) return { stopped: false }
-        const entry = active
-        active = undefined
-        entry.bridge?.close()
-        entry.sideband?.close()
-        void registration.events.emit("state", { callID: entry.callID, state: "closed" })
+        active.end()
         return { stopped: true }
+      },
+
+      alive: async (input) => {
+        if (!active || active.callID !== input.callID) return { active: false }
+        active.seenAt = Date.now()
+        return { active: true }
       },
 
       say: async (input) => {
@@ -386,6 +410,7 @@ export default Plugin.define({
     })
 
     return async () => {
+      clearInterval(reaper)
       active?.bridge?.close()
       active?.sideband?.close()
       active = undefined

@@ -215,10 +215,11 @@ export class VoiceController {
         call: call.call,
         entries: [...past, ...this.state.entries],
       })
+      this.heartbeat(call.callID)
       await helper.answer(call.sdp)
       if (this.state.phase === "connecting") this.markLive()
     } catch (error) {
-      await this.teardown(error instanceof Error ? error.message : String(error))
+      await this.teardown(describeError(error))
     } finally {
       this.starting = false
     }
@@ -247,7 +248,25 @@ export class VoiceController {
     }
   }
 
+  private pulse: ReturnType<typeof setInterval> | undefined
+
+  /** Tells the server this window still owns the call, so abandoned calls get cleaned up. */
+  private heartbeat(callID: string) {
+    clearInterval(this.pulse)
+    this.pulse = setInterval(() => {
+      if (this.state.callID !== callID || !this.active) return clearInterval(this.pulse)
+      void this.rpc()
+        .alive({ callID }, { location: this.state.location })
+        .then((reply) => {
+          if (!reply.active && this.state.callID === callID && this.active) void this.teardown(undefined, "Call closed")
+        })
+        .catch(() => undefined)
+    }, 5_000)
+  }
+
   private async finishTeardown(error?: string, reason?: string) {
+    clearInterval(this.pulse)
+    this.pulse = undefined
     const helper = this.helper
     this.helper = undefined
     await helper?.close().catch(() => helper.kill())
@@ -370,4 +389,20 @@ export class VoiceController {
     await this.stop()
     this.listeners.clear()
   }
+}
+
+/** Readable text for errors from the helper, RPC or network, which are not always Errors. */
+export function describeError(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === "string") return error
+  if (error && typeof error === "object") {
+    const value = error as { message?: unknown; data?: { message?: unknown }; error?: unknown }
+    if (typeof value.message === "string") return value.message
+    if (typeof value.data?.message === "string") return value.data.message
+    if (value.error !== undefined && value.error !== error) return describeError(value.error)
+    try {
+      return JSON.stringify(error)
+    } catch {}
+  }
+  return String(error)
 }

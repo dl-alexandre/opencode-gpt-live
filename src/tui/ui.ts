@@ -5,9 +5,10 @@
 import type { RGBA, Renderable, TextRenderable } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { Entry, VoiceController } from "./controller"
-import { GlowCanvas, type Rgb } from "./glow"
-import { HerdrStream, detectHerdr, type HerdrPane } from "./herdr"
-import { duration, flap, pulse, shimmer, smoothWave, spinner } from "./visuals"
+import { AuraCanvas, type AuraPalette, type Rgb } from "./aura"
+import { useCore as provideCore } from "./core"
+import { debug, fallbackSurface, pickSurface, type Surface } from "./surface"
+import { duration, flap, pulse, shimmer, spinner } from "./visuals"
 
 type Context = Plugin.Context
 type Theme = Context["theme"]
@@ -21,6 +22,7 @@ let core: Core
 
 export function useCore(module: Core) {
   core = module
+  provideCore(module)
 }
 type Chunk = { __isChunk: true; text: string; fg?: RGBA; bg?: RGBA; attributes?: number }
 
@@ -90,11 +92,15 @@ export interface View {
   update(now: number): void
   /** True while the view needs frame-by-frame redraws. */
   animating(now: number): boolean
-  /** Releases resources outside the renderable tree (e.g. herdr image layers). */
+  /** Preferred frame interval in milliseconds while animating (default 33). */
+  interval?(): number
+  /** Hides anything drawn outside the renderable tree (e.g. herdr image layers). */
+  suspend?(): void
+  /** Releases resources outside the renderable tree. */
   dispose?(): void
 }
 
-/** The main-UI call strip above the prompt: status, smooth waveform, activity. */
+/** The main-UI call strip above the prompt: status and activity. The aura lives on the side. */
 export function voiceStrip(context: Context, voice: VoiceController, sessionID: () => string | undefined): View {
   const renderer = context.renderer
   const root = new core.BoxRenderable(renderer, {
@@ -106,37 +112,20 @@ export function voiceStrip(context: Context, voice: VoiceController, sessionID: 
   // Single-line rows get an explicit height so they never collapse onto each other.
   const line = () => new core.TextRenderable(renderer, { content: "", wrapMode: "none", height: 1, flexShrink: 0 })
   const header = line()
-  const wave = [line(), line(), line()]
   const activity = line()
-  // Terminals with kitty graphics get an anti-aliased image waveform; others use braille.
-  const glow = glowWave(context, 3)
-  const waveBox = new core.BoxRenderable(renderer, {
-    flexDirection: "column",
-    height: 3,
-    flexShrink: 0,
-    alignItems: "center",
-  })
-  if (glow) waveBox.add(glow.node)
-  for (const child of wave) waveBox.add(child)
-  for (const child of [header, waveBox, activity]) root.add(child)
+  root.add(header)
+  root.add(activity)
   root.visible = false
 
   const shortcut = (id: string, fallback: string) => context.keymap.shortcuts(id)[0] ?? fallback
-  // Smoothed levels so the waveform swells and settles instead of flickering.
-  let level = 0
-  let speaker = 0
 
   return {
     root,
-    dispose: () => glow?.hide(),
     animating: () => voice.owns(sessionID()),
     update(now) {
       const show = voice.owns(sessionID())
       if (root.visible !== show) root.visible = show
-      if (!show) {
-        glow?.hide()
-        return
-      }
+      if (!show) return
       const state = voice.state
       const p = palette(context.theme)
       const total = Math.max(24, (root.width || renderer.width) - 2)
@@ -170,56 +159,6 @@ export function voiceStrip(context: Context, voice: VoiceController, sessionID: 
       const short: Chunk[] = [chunk(`${shortcut("gptlive.toggle", "/voice")}`, p.muted), chunk(" end", p.dim)]
       header.content = styled(row(left, width(left) + width(full) + 2 <= total ? full : short, total))
 
-      // Waveform: a straight line at rest, a smooth mirrored wave while anyone speaks.
-      const mic = state.muted ? 0 : state.micLevel
-      const target = Math.max(mic, state.speakerLevel)
-      level += (target - level) * (target > level ? 0.45 : 0.18)
-      speaker += ((state.speakerLevel >= mic ? 1 : 0) - speaker) * 0.25
-      const active = mix(mix(p.mic[1], p.speaker[1], speaker), mix(p.mic[2], p.speaker[2], speaker), pulse(now, 1600))
-      // The resting line must read clearly on dark and translucent backgrounds.
-      const restColor = state.phase === "connecting" ? mix(p.muted, p.warn, 0.4) : mix(p.muted, p.text, 0.25)
-      const waveWidth = Math.max(20, Math.min(total, 120))
-      const rows = smoothWave({
-        width: waveWidth,
-        rows: 3,
-        time: now - state.startedAt,
-        phase: state.phase,
-        liveFor: state.liveAt ? now - state.liveAt : Number.POSITIVE_INFINITY,
-        // Perceptual curve: quiet speech should still move the line.
-        level: Math.min(1, Math.sqrt(level) * 1.1),
-      })
-      if (glow?.active()) {
-        for (const text of wave) if (text.visible) text.visible = false
-        glow.draw({
-          columns: waveWidth,
-          time: now - state.startedAt,
-          phase: state.phase,
-          liveFor: state.liveAt ? now - state.liveAt : Number.POSITIVE_INFINITY,
-          level: Math.min(1, Math.sqrt(level) * 1.1),
-          colors: [
-            rgb(mix(p.mic[1], p.speaker[1], speaker)),
-            rgb(mix(p.mic[2], p.speaker[0], speaker)),
-            rgb(mix(p.mic[0], p.speaker[2], speaker)),
-          ],
-          rest: rgb(restColor),
-        })
-      } else {
-        glow?.hide()
-        for (const text of wave) if (!text.visible) text.visible = true
-      }
-      const pad = chunk(" ".repeat(Math.max(0, Math.floor((total - waveWidth) / 2))))
-      if (!glow?.active())
-        rows.forEach((cells, index) => {
-          wave[index].content = styled([
-            pad,
-            ...cells.map((cell) =>
-              cell.energy > 0
-                ? chunk(cell.char, mix(restColor, active, 0.45 + cell.energy * 0.55))
-                : chunk(cell.char, restColor),
-            ),
-          ])
-        })
-
       // Activity line.
       const you: Chunk[] = [
         chunk("you ", p.mic[1]),
@@ -246,152 +185,140 @@ export function voiceStrip(context: Context, voice: VoiceController, sessionID: 
   }
 }
 
-/** Developer diagnostics: GPT_LIVE_DEBUG=/path/file.jsonl records UI capability decisions. */
-export function debug(entry: Record<string, unknown>) {
-  const file = process.env.GPT_LIVE_DEBUG
-  if (!file) return
-  try {
-    require("node:fs").appendFileSync(file, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`)
-  } catch {
-    // Diagnostics must never break the UI.
-  }
-}
-
 function rgb(color: RGBA): Rgb {
   const [r, g, b] = color.toInts()
   return [r, g, b]
 }
 
-interface GlowFrame {
-  columns: number
-  time: number
-  phase: VoiceController["state"]["phase"]
-  liveFor: number
-  level: number
-  colors: readonly [Rgb, Rgb, Rgb]
-  rest: Rgb
+// Speaker colors are fixed rather than taken from the theme: themes often map their hues to
+// greys or teals, and telling you and GPT-Live apart at a glance matters more than matching.
+const AURA_USER = [
+  [80, 225, 255],
+  [45, 140, 255],
+] as const
+const AURA_ASSISTANT = [
+  [175, 110, 255],
+  [255, 85, 205],
+] as const
+
+function auraPalette(p: Palette): AuraPalette {
+  return {
+    user: AURA_USER,
+    assistant: AURA_ASSISTANT,
+    rest: [rgb(mix(p.muted, p.text, 0.35)), rgb(p.muted)],
+    connecting: [255, 190, 90],
+    muted: rgb(mix(p.muted, p.error, 0.2)),
+  }
 }
 
-interface WaveSurface {
-  /** The renderable that occupies the waveform's space in the layout. */
-  readonly node: Renderable
-  active(): boolean
-  hide(): void
-  draw(frame: GlowFrame): void
-}
+const AURA_COLS = 24
 
 /**
- * Picks the best waveform surface for this terminal:
- * - inside herdr: frames streamed through herdr's pane graphics API (herdr does not show
- *   kitty images printed by programs);
- * - terminals with kitty graphics (Ghostty, kitty, WezTerm): an image renderable;
- * - otherwise none, and the caller draws the braille waveform.
- * The `waveform` plugin option or GPT_LIVE_WAVEFORM can force "image" or "braille".
+ * The voice aura: a glowing woven ring that swells with the voice, cyan while you speak and
+ * violet while GPT-Live speaks, with a one-line caption underneath. Drawn as an image where
+ * the terminal supports it, otherwise with half-block characters.
  */
-function glowWave(context: Context, rows: number): WaveSurface | undefined {
+export function voiceAura(context: Context, voice: VoiceController, visible: () => boolean, layer: string): View {
   const renderer = context.renderer
-  const mode = (context.options as { waveform?: string }).waveform ?? process.env.GPT_LIVE_WAVEFORM
-  if (mode === "braille") return undefined
-  const herdr = detectHerdr()
-  debug({
-    event: "wave-surface",
-    mode: mode ?? "auto",
-    herdr: !!herdr,
-    capabilities: renderer.capabilities,
-    env: { TERM: process.env.TERM, TERM_PROGRAM: process.env.TERM_PROGRAM, TMUX: !!process.env.TMUX },
-  })
-  if (herdr) return herdrWave(renderer, rows, herdr)
-  if (!renderer.capabilities?.kitty_graphics && mode !== "image") return undefined
-  return kittyWave(renderer, rows)
-}
-
-function kittyWave(renderer: Context["renderer"], rows: number): WaveSurface {
-  let failed = false
-  const image = new core.ImageRenderable(renderer, {
-    height: rows,
-    fit: "fill",
-    protocol: "kitty",
+  const root = new core.BoxRenderable(renderer, {
+    flexDirection: "column",
+    alignItems: "center",
     flexShrink: 0,
-    onError: (error) => {
-      failed = true
-      debug({ event: "image-error", error: String(error) })
-    },
+    paddingTop: 1,
+    paddingBottom: 1,
   })
-  image.visible = false
-  let pool: InstanceType<Core["NativeImagePool"]> | undefined
-  let canvas: GlowCanvas | undefined
-  // publishRgba returns a retained frame; the image renderable takes its own reference,
-  // so ours must be released once the next frame replaces it. Holding on to it keeps the
-  // pool's slots busy and the waveform freezes after a few frames.
-  let last: ReturnType<InstanceType<Core["NativeImagePool"]>["publishRgba"]> = null
-  const dispose = () => {
-    last?.dispose()
-    last = null
-    pool?.dispose()
-    pool = undefined
-  }
-  return {
-    node: image,
-    active: () => !failed && !image.isDestroyed,
-    hide() {
-      if (image.visible) image.visible = false
-    },
-    draw(frame) {
-      try {
-        // Pixels per cell: roughly 8x16, enough for a smooth anti-aliased curve.
-        const width = frame.columns * 8
-        const height = rows * 16
-        if (!canvas || canvas.width !== width || canvas.height !== height) {
-          dispose()
-          canvas = new GlowCanvas(width, height)
-          pool = new core.NativeImagePool({ width, height, capacity: 3 })
-        }
-        if (image.width !== frame.columns) image.width = frame.columns
-        const published = pool!.publishRgba(canvas.draw(frame))
-        if (published) {
-          image.source = published
-          last?.dispose()
-          last = published
-        }
-        if (!image.visible) image.visible = true
-      } catch (error) {
-        failed = true
-        image.visible = false
-        dispose()
-        debug({ event: "draw-error", error: String(error) })
-      }
-    },
-  }
-}
+  const caption = new core.TextRenderable(renderer, { content: "", wrapMode: "none", height: 1, flexShrink: 0 })
+  let surface: Surface = pickSurface(context, layer, AURA_COLS / 2)
+  root.add(surface.node)
+  root.add(caption)
+  root.visible = false
 
-function herdrWave(renderer: Context["renderer"], rows: number, pane: HerdrPane): WaveSurface {
-  // An empty box reserves the waveform's cells; herdr draws the image over them.
-  const slot = new core.BoxRenderable(renderer, { height: rows, flexShrink: 0 })
-  let failed = false
-  const stream = new HerdrStream(pane, "gptlive-wave", (error) => {
-    failed = true
-    debug({ event: "herdr-error", error })
-  })
-  let canvas: GlowCanvas | undefined
-  let lastSent = 0
+  let canvas: AuraCanvas | undefined
+  let level = 0
+  let speaker = 1
+  let last = 0
+
+  const hide = () => {
+    surface.hide()
+    if (root.visible) root.visible = false
+  }
+
   return {
-    node: slot,
-    active: () => !failed && !slot.isDestroyed,
-    hide() {
-      stream.close()
-    },
-    draw(frame) {
-      if (slot.width !== frame.columns) slot.width = frame.columns
-      // herdr re-uploads each frame inline; ~20 fps at modest resolution keeps it light.
-      const now = Date.now()
-      if (now - lastSent < 45) return
-      const width = frame.columns * 6
-      const height = rows * 14
-      if (!canvas || canvas.width !== width || canvas.height !== height) canvas = new GlowCanvas(width, height)
-      if (slot.width <= 0) return
-      // The socket may still hold the previous buffer, so each frame gets its own copy.
-      const pixels = canvas.draw(frame).slice()
-      if (stream.send(pixels, width, height, { col: slot.x, row: slot.y, cols: frame.columns, rows })) lastSent = now
+    root,
+    animating: () => visible() && voice.active,
+    interval: () => surface.interval,
+    suspend: hide,
+    dispose: () => surface.dispose(),
+    update(now) {
+      if (!visible() || !voice.active) return hide()
+      if (!root.visible) root.visible = true
+      if (!surface.healthy()) {
+        debug({ event: "surface-fallback", layer, from: surface.kind })
+        surface.dispose()
+        root.remove(surface.node)
+        surface.node.destroyRecursively()
+        surface = fallbackSurface(context, AURA_COLS / 2)
+        root.add(surface.node, 0)
+      }
+      const state = voice.state
+      const p = palette(context.theme)
+
+      // Time-based smoothing: quick to swell, slower to settle, the same at any frame rate.
+      const dt = last ? Math.min(0.1, (now - last) / 1000) : 0
+      last = now
+      const mic = state.muted ? 0 : state.micLevel
+      const target = Math.max(mic, state.speakerLevel)
+      level += (target - level) * (1 - Math.exp(-dt / (target > level ? 0.04 : 0.2)))
+      // Hold the last speaker's identity through pauses instead of drifting to a blend.
+      if (target > 0.04) speaker += ((state.speakerLevel >= mic ? 1 : 0) - speaker) * (1 - Math.exp(-dt / 0.15))
+
+      const available = (root.parent?.width ?? AURA_COLS + 2) - 2
+      const cols = Math.max(12, Math.min(AURA_COLS, available - (available % 2)))
+      const input = {
+        time: now - state.startedAt,
+        phase: state.phase,
+        liveFor: state.liveAt ? now - state.liveAt : Number.POSITIVE_INFINITY,
+        // Perceptual curve: quiet speech should still move the ring.
+        level: Math.min(1, Math.sqrt(level) * 1.1),
+        speaker,
+        muted: state.muted,
+        palette: auraPalette(p),
+      }
+      if (process.env.GPT_LIVE_DEBUG && Math.floor(now / 1000) !== Math.floor((now - dt * 1000) / 1000))
+        debug({
+          event: "aura",
+          layer,
+          level: input.level,
+          speaker,
+          mic,
+          out: state.speakerLevel,
+          palette: input.palette,
+        })
+      surface.draw(
+        (width, height) => {
+          if (!canvas || canvas.width !== width || canvas.height !== height) canvas = new AuraCanvas(width, height)
+          return canvas.draw(input)
+        },
+        cols,
+        cols / 2,
+        p.bg,
+      )
+
+      const talking = state.speakerLevel > 0.12 ? "assistant" : mic > 0.12 ? "user" : undefined
+      const words: Chunk[] =
+        state.phase === "connecting"
+          ? [chunk(`${spinner(now)} connecting`, p.warn)]
+          : state.phase === "closing"
+            ? [chunk("ending call", p.muted)]
+            : state.muted
+              ? [chunk("⊘ muted", p.error)]
+              : talking === "assistant"
+                ? [chunk("GPT-Live speaking", core.RGBA.fromInts(...AURA_ASSISTANT[0], 255))]
+                : talking === "user"
+                  ? [chunk("you're speaking", core.RGBA.fromInts(...AURA_USER[0], 255))]
+                  : [chunk("listening", p.dim)]
+      if (state.phase === "live" && state.liveAt) words.push(chunk(`  ${duration(now - state.liveAt)}`, p.muted))
+      caption.content = styled(words)
     },
   }
 }
@@ -445,8 +372,8 @@ function entryAnimating(entry: Entry, now: number) {
   return last !== undefined && now - last < 400
 }
 
-/** The side-panel transcript. */
-export function transcriptPanel(context: Context, voice: VoiceController): View {
+/** The side-panel transcript, with the aura on top while a call is on. */
+export function transcriptPanel(context: Context, voice: VoiceController, visible: () => boolean): View {
   const renderer = context.renderer
   const root = new core.BoxRenderable(renderer, {
     flexDirection: "column",
@@ -466,6 +393,8 @@ export function transcriptPanel(context: Context, voice: VoiceController): View 
     stickyStart: "bottom",
     marginTop: 1,
   })
+  const aura = voiceAura(context, voice, visible, "gptlive-aura-panel")
+  root.add(aura.root)
   root.add(header)
   root.add(devices)
   root.add(scroll)
@@ -475,7 +404,11 @@ export function transcriptPanel(context: Context, voice: VoiceController): View 
   return {
     root,
     animating: (now) => voice.active || voice.state.entries.some((entry) => entryAnimating(entry, now)),
+    interval: () => (aura.animating(Date.now()) ? aura.interval!() : 33),
+    suspend: () => aura.suspend!(),
+    dispose: () => aura.dispose!(),
     update(now) {
+      aura.update(now)
       const state = voice.state
       const p = palette(context.theme)
       const phase =
@@ -562,12 +495,13 @@ export function footerBadge(context: Context, voice: VoiceController): View {
 }
 
 /**
- * Drives every mounted view: redraws on state changes, and at ~20 fps while anything is
- * animating. Views whose renderables were removed by the host are dropped automatically.
+ * Drives every mounted view: redraws on state changes, and while anything is animating at
+ * the fastest rate an animating view asks for (60 fps for the image aura, else 30). Views whose renderables were removed by the host are dropped automatically.
  */
 export class Frames {
   private readonly views = new Set<View>()
   private timer: ReturnType<typeof setInterval> | undefined
+  private period = 0
   private readonly stopListening: () => void
 
   constructor(private readonly voice: VoiceController) {
@@ -583,6 +517,7 @@ export class Frames {
   private tick() {
     const now = Date.now()
     let animating = false
+    let period = 33
     for (const view of this.views) {
       if (view.root.isDestroyed) {
         view.dispose?.()
@@ -591,15 +526,21 @@ export class Frames {
       }
       try {
         view.update(now)
-        animating ||= view.animating(now)
+        if (view.animating(now)) {
+          animating = true
+          period = Math.min(period, view.interval?.() ?? 33)
+        }
       } catch {
         // Keep other views and the call alive if one view fails to draw.
       }
     }
-    if (animating && !this.timer) this.timer = setInterval(() => this.tick(), 33)
-    if (!animating && this.timer) {
+    if (this.timer && (!animating || period !== this.period)) {
       clearInterval(this.timer)
       this.timer = undefined
+    }
+    if (animating && !this.timer) {
+      this.period = period
+      this.timer = setInterval(() => this.tick(), period)
     }
   }
 
