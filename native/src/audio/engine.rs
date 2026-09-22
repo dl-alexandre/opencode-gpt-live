@@ -20,7 +20,9 @@ use sonora::StreamConfig;
 use sonora::config::AdaptiveDigital;
 use sonora::config::EchoCanceller;
 use sonora::config::GainController2;
+use sonora::config::HighPassFilter;
 use sonora::config::NoiseSuppression;
+use sonora::config::NoiseSuppressionLevel;
 use tokio::sync::mpsc;
 
 use super::io::AudioIo;
@@ -161,7 +163,12 @@ impl State {
         let apm = AudioProcessing::builder()
             .config(sonora::Config {
                 echo_canceller: Some(EchoCanceller::default()),
-                noise_suppression: Some(NoiseSuppression::default()),
+                high_pass_filter: Some(HighPassFilter::default()),
+                // Voice calls often happen with music or a TV in the room; favor clarity.
+                noise_suppression: Some(NoiseSuppression {
+                    level: NoiseSuppressionLevel::High,
+                    ..Default::default()
+                }),
                 gain_controller2: Some(GainController2 {
                     adaptive_digital: Some(AdaptiveDigital::default()),
                     ..Default::default()

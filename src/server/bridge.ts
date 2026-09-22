@@ -2,6 +2,7 @@ import type { Plugin } from "@opencode/plugin"
 import type { TaskStatus } from "../shared/rpc"
 import { clip, speakable } from "./instructions"
 import type { LiveEvent, Sideband } from "./live"
+import type { CallLog } from "./log"
 
 type Context = Plugin.Context
 
@@ -11,6 +12,10 @@ export interface BridgeEvents {
   activity(scope: "voice" | "main", busy: boolean, label?: string): void
   closed(reason: string): void
   error(message: string): void
+  /** The user asked (by voice) to hang up. */
+  end(reason: string): void
+  /** A finished conversation turn, for persistence across calls. */
+  turn?(role: "user" | "assistant", text: string): void
 }
 
 interface Task {
@@ -43,6 +48,7 @@ const TOOL_LABELS: Record<string, string> = {
   gptlive_main_stop: "stopping OpenCode",
   gptlive_main_permissions: "checking permissions",
   gptlive_main_permission_reply: "answering a permission",
+  gptlive_end_call: "ending the call",
 }
 
 export function toolLabel(name: string) {
@@ -70,7 +76,13 @@ export class Bridge {
   private mainText = ""
   private cancelRequested = false
   private closed = false
+  private ending = false
   private taskCounter = 0
+  /** Finished conversation turns since the last hand-off to the voice agent. */
+  private turns: { role: "user" | "assistant"; text: string }[] = []
+  /** Coding-session updates the voice agent has not seen yet. */
+  private updates: string[] = []
+  private introduced = false
 
   constructor(
     private readonly ctx: Context,
@@ -78,6 +90,8 @@ export class Bridge {
     readonly voiceSessionID: string,
     private readonly sideband: Sideband,
     private readonly events: BridgeEvents,
+    private readonly log?: CallLog,
+    private readonly call = 1,
   ) {
     void this.watchSessions()
   }
@@ -86,6 +100,12 @@ export class Bridge {
     switch (event.kind) {
       case "transcript":
         this.events.transcript(event.role, event.text, event.final)
+        if (event.final && event.text.trim()) {
+          this.turns.push({ role: event.role, text: event.text.trim() })
+          if (this.turns.length > 40) this.turns = this.turns.slice(-40)
+          this.log?.write({ type: "turn", role: event.role, text: event.text.trim() })
+          this.events.turn?.(event.role, event.text.trim())
+        }
         return
       case "delegation":
         void this.toVoice(event.id, event.text).catch((error) =>
@@ -102,8 +122,13 @@ export class Bridge {
   }
 
   private async toVoice(delegationID: string, raw: string) {
-    const text = raw.trim()
-    if (!text) return
+    const request = raw.trim()
+    if (!request) return
+    this.log?.write({ type: "handoff", delegationID, request, turns: this.turns, updates: this.updates })
+    const text = handoff(request, this.turns, this.updates, this.introduced ? undefined : this.call)
+    this.introduced = true
+    this.turns = []
+    this.updates = []
     const entry = await this.ctx.session.prompt({
       sessionID: this.voiceSessionID as never,
       text,
@@ -115,7 +140,10 @@ export class Bridge {
   }
 
   /** Tool: send a task or message to the main session. */
-  async send(text: string, delivery: "queue" | "steer" = "queue"): Promise<string> {
+  async send(raw: string, delivery: "queue" | "steer" = "queue"): Promise<string> {
+    const text = raw.trim()
+    if (!text) throw new Error("text is empty; write the brief you want to send")
+    this.log?.write({ type: "task", delivery, text })
     const id = `task_${++this.taskCounter}`
     const record: Task = { id, text, status: "queued" }
     this.tasks.set(id, record)
@@ -265,7 +293,8 @@ export class Bridge {
           ? `The voice agent hit an error: ${clip((data.error as { message?: string })?.message ?? "unknown", 200)}`
           : text
         // After handing work off, GPT-Live has already acknowledged; the result is spoken later.
-        const channel = this.voiceDelegated && !failed ? "commentary" : "speakable"
+        const channel = (this.voiceDelegated || !this.currentDelegation) && !failed ? "commentary" : "speakable"
+        if (message) this.log?.write({ type: "voice-reply", channel, text: message })
         if (message) this.sideband.append(message, channel, this.currentDelegation)
         this.currentDelegation = undefined
         this.voiceText = ""
@@ -343,16 +372,20 @@ export class Bridge {
     }
   }
 
+  /** Queue a coding-session update for the voice agent's next hand-off (no extra turn). */
   private notifyVoice(text: string) {
-    void this.ctx.session
-      .synthetic({
-        sessionID: this.voiceSessionID as never,
-        text: `[main session update] ${text}`,
-        description: "Main session update",
-        delivery: "queue",
-        resume: false,
-      })
-      .catch(() => undefined)
+    this.log?.write({ type: "update", text })
+    this.updates.push(text)
+    if (this.updates.length > 10) this.updates = this.updates.slice(-10)
+  }
+
+  /** Tool: hang up after the goodbye has been spoken. */
+  endCall(): string {
+    if (this.ending) return "The call is already ending."
+    this.ending = true
+    this.log?.write({ type: "end-requested" })
+    setTimeout(() => this.events.end("Ended by voice"), 4_500)
+    return "The call ends in a few seconds. Reply with a very short goodbye and nothing else."
   }
 
   /** Lets the user type a message straight to the voice layer. */
@@ -366,4 +399,40 @@ export class Bridge {
     this.abort.abort()
     this.sideband.close()
   }
+}
+
+function escape(text: string) {
+  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+}
+
+/**
+ * Builds the message the voice agent receives for one hand-off: the conversation since
+ * the previous hand-off (turns GPT-Live answered itself included), coding-session updates
+ * it has not seen, and the request as the voice model understood it.
+ */
+export function handoff(
+  request: string,
+  turns: readonly { role: "user" | "assistant"; text: string }[],
+  updates: readonly string[],
+  call?: number,
+) {
+  const parts: string[] = []
+  if (call !== undefined) {
+    parts.push(
+      call > 1
+        ? `<call_started number="${call}">A new voice call started. Earlier calls in this session are above; the user may refer back to them.</call_started>`
+        : `<call_started number="1">The first voice call in this session started.</call_started>`,
+    )
+  }
+  if (turns.length) {
+    const lines = turns.map((turn) => `${turn.role === "user" ? "user" : "you"}: ${escape(clip(turn.text, 1_200))}`)
+    parts.push(`<conversation_since_last_message>\n${lines.join("\n")}\n</conversation_since_last_message>`)
+  }
+  if (updates.length) {
+    parts.push(
+      `<coding_session_updates>\n${updates.map((update) => `- ${escape(update)}`).join("\n")}\n</coding_session_updates>`,
+    )
+  }
+  parts.push(`<request>${escape(request)}</request>`)
+  return parts.join("\n")
 }

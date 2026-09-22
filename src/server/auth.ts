@@ -3,9 +3,7 @@ import type { Auth } from "./live"
 
 type Context = Plugin.Context
 
-export type AuthResult =
-  | { ok: true; auth: Auth; plan?: string }
-  | { ok: false; reason: string }
+export type AuthResult = { ok: true; auth: Auth; plan?: string } | { ok: false; reason: string }
 
 interface Claims {
   chatgpt_account_id?: string
@@ -27,8 +25,7 @@ export function claims(token: string): Claims {
   }
 }
 
-const NOT_SIGNED_IN =
-  "GPT-Live needs your ChatGPT subscription. Run /connect, choose OpenAI, then \"ChatGPT Pro/Plus\"."
+const NOT_SIGNED_IN = 'GPT-Live needs your ChatGPT subscription. Run /connect, choose OpenAI, then "ChatGPT Pro/Plus".'
 
 /**
  * Finds the ChatGPT sign-in among the OpenAI connections. OpenCode refreshes the
@@ -39,12 +36,13 @@ export async function resolveAuth(ctx: Context): Promise<AuthResult> {
   const connections = (integration?.data as { connections?: unknown[] } | undefined)?.connections ?? []
   const oauth = connections.filter(
     (connection): connection is { type: "credential"; id: string; label: string; method: "oauth" } =>
-      (connection as { type?: string }).type === "credential" &&
-      (connection as { method?: string }).method === "oauth",
+      (connection as { type?: string }).type === "credential" && (connection as { method?: string }).method === "oauth",
   )
   if (oauth.length === 0) return { ok: false, reason: NOT_SIGNED_IN }
   const active = await ctx.integration.connection.active("openai").catch(() => undefined)
-  const ordered = [...oauth].sort((a, b) => Number(b.id === (active as { id?: string })?.id) - Number(a.id === (active as { id?: string })?.id))
+  const ordered = [...oauth].sort(
+    (a, b) => Number(b.id === (active as { id?: string })?.id) - Number(a.id === (active as { id?: string })?.id),
+  )
   for (const connection of ordered) {
     const credential = await ctx.integration.connection.resolve(connection as never).catch(() => undefined)
     if (!credential || credential.type !== "oauth") continue

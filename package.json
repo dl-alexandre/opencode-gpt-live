@@ -21,22 +21,24 @@
     "chatgpt"
   ],
   "exports": {
-    ".": "./src/server/index.ts",
-    "./tui": "./src/tui/index.tsx",
+    ".": "./index.ts",
+    "./tui": "./tui.ts",
     "./rpc": "./src/shared/rpc.ts"
   },
   "files": [
+    "index.ts",
+    "tui.ts",
     "src",
-    "scripts/postinstall.mjs",
     "README.md",
     "LICENSE",
     "NOTICE"
   ],
   "scripts": {
+    "build:native": "cargo build --release --manifest-path native/Cargo.toml",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "build:native": "cargo build --release --manifest-path native/Cargo.toml",
-    "check": "bun run typecheck && bun test"
+    "check": "bun run typecheck && bun test",
+    "prepublishOnly": "bun run check"
   },
   "dependencies": {
     "@opencode/plugin": "^2.0.14",
@@ -49,6 +51,7 @@
   },
   "devDependencies": {
     "@opencode/client": "2.0.14",
+    "@opencode/theme": "2.0.14",
     "@opentui/core": "0.5.12",
     "@opentui/solid": "0.5.12",
     "@types/bun": "latest",

@@ -3,8 +3,9 @@ import pkg from "../../package.json" with { type: "json" }
 import { GptLive, VOICES, type Voice } from "../shared/rpc"
 import { resolveAuth } from "./auth"
 import { Bridge } from "./bridge"
-import { background, historyFrom, instructions, voiceAgentPrompt } from "./instructions"
+import { background, historyFrom, instructions, voiceAgentPrompt, type HistoryEntry } from "./instructions"
 import { LiveError, MODEL, Sideband, createCall, requestIDs } from "./live"
+import { CallLog } from "./log"
 
 interface Options {
   voice?: string
@@ -13,6 +14,8 @@ interface Options {
   voiceModel?: string
   /** Thinking level for the voice agent's model. */
   voiceVariant?: string
+  /** Keep a local JSONL log of each call (default true). */
+  log?: boolean
 }
 
 interface Call {
@@ -25,6 +28,13 @@ interface Call {
 }
 
 const TOOL_PREFIX = "gptlive_"
+/** Finished turns remembered per voice session for the next call's context. */
+const TURNS_KEPT = 30
+
+type Link = {
+  voiceSessionID: string
+  calls: number
+}
 
 function parseModel(value: string, variant?: string) {
   const slash = value.indexOf("/")
@@ -98,7 +108,7 @@ export default Plugin.define({
             delivery: {
               type: "string",
               enum: ["queue", "steer"],
-              description: 'queue (default): run after current work. steer: redirect the work already running.',
+              description: "queue (default): run after current work. steer: redirect the work already running.",
             },
           },
           required: ["text"],
@@ -108,7 +118,8 @@ export default Plugin.define({
       })
       tool({
         name: "main_status",
-        description: "Check whether the main session is busy, what it is doing right now, queued tasks and its last reply.",
+        description:
+          "Check whether the main session is busy, what it is doing right now, queued tasks and its last reply.",
         input: { type: "object", properties: {}, additionalProperties: false },
         run: (bridge) => bridge.status(),
       })
@@ -133,6 +144,13 @@ export default Plugin.define({
         description: "List permission requests the main session is waiting on.",
         input: { type: "object", properties: {}, additionalProperties: false },
         run: (bridge) => bridge.permissions(),
+      })
+      tool({
+        name: "end_call",
+        description:
+          "Hang up the voice call. Use only when the user clearly asks to end, stop or hang up the call, or says goodbye to finish.",
+        input: { type: "object", properties: {}, additionalProperties: false },
+        run: (bridge) => bridge.endCall(),
       })
       tool({
         name: "main_permission_reply",
@@ -201,14 +219,30 @@ export default Plugin.define({
           .catch(() => [])
         const project = ctx.location.project.canonical.split(/[\\/]/).filter(Boolean).pop() ?? "project"
 
-        const voiceSession = await ctx.session.create({
-          title: `Voice · ${mainTitle ?? "session"}`,
-          ...(voiceModel ? { model: voiceModel as never } : {}),
-          metadata: { gptLive: { role: "voice", mainSessionID: input.sessionID } },
-        })
-        const prompt =
-          voiceAgentPrompt({ project, directory: ctx.location.directory }) +
-          background(history)
+        // One voice session per main session, continued across calls unless a fresh one is requested.
+        const linkKey = `link/${input.sessionID}`
+        let link = input.fresh ? undefined : ((await ctx.storage.get(linkKey)) as Link | undefined)
+        let voiceTitle = link
+          ? (
+              (await ctx.session.get({ sessionID: link.voiceSessionID as never }).catch(() => undefined)) as
+                { title?: string } | undefined
+            )?.title
+          : undefined
+        if (!link || voiceTitle === undefined) {
+          voiceTitle = `Voice · ${mainTitle ?? "session"}`
+          const created = await ctx.session.create({
+            title: voiceTitle,
+            ...(voiceModel ? { model: voiceModel as never } : {}),
+            metadata: { gptLive: { role: "voice", mainSessionID: input.sessionID } },
+          })
+          link = { voiceSessionID: created.id, calls: 0 }
+        }
+        link = { ...link, calls: link.calls + 1 }
+        await ctx.storage.set(linkKey, { ...link })
+        const voiceSession = { id: link.voiceSessionID }
+        const turnsKey = `turns/${link.voiceSessionID}`
+        const previous = (((await ctx.storage.get(turnsKey)) as HistoryEntry[] | undefined) ?? []).slice(-TURNS_KEPT)
+        const prompt = voiceAgentPrompt({ project, directory: ctx.location.directory }) + background(history)
 
         const ids = requestIDs()
         let call: { callID: string; sdp: string }
@@ -223,7 +257,13 @@ export default Plugin.define({
               model: MODEL,
               instructions:
                 instructions({ project, directory: ctx.location.directory, extra: options.instructions }) +
-                background(history),
+                background(
+                  previous,
+                  "Your recent voice conversation with this user from earlier calls",
+                  "previous_calls",
+                  4_000,
+                ) +
+                background(history, undefined, undefined, 4_000),
               audio: { output: { voice } },
               delegation: { type: "client" },
             },
@@ -266,21 +306,66 @@ export default Plugin.define({
               return
             }
             entry.sideband = sideband
-            entry.bridge = new Bridge(ctx, entry.sessionID, entry.voiceSessionID, sideband, {
-              transcript: (role, text, final) =>
-                void registration.events.emit("transcript", { callID: entry.callID, role, text, final }),
-              task: (taskID, text, status, detail) =>
-                void registration.events.emit("task", defined({ callID: entry.callID, taskID, text, status, detail })),
-              activity: (scope, busy, label) =>
-                void registration.events.emit("activity", defined({ callID: entry.callID, scope, busy, label })),
-              closed: (reason) => finish("closed", reason),
-              error: (message) => emitState("error", message),
+            const log = options.log === false ? undefined : new CallLog(entry.callID)
+            log?.write({
+              type: "start",
+              callID: entry.callID,
+              sessionID: entry.sessionID,
+              voiceSessionID: entry.voiceSessionID,
+              voice,
             })
+            let turns = previous.slice()
+            entry.bridge = new Bridge(
+              ctx,
+              entry.sessionID,
+              entry.voiceSessionID,
+              sideband,
+              {
+                turn: (role, text) => {
+                  turns = [...turns, { role, text }].slice(-TURNS_KEPT)
+                  void ctx.storage
+                    .set(
+                      turnsKey,
+                      turns.map((turn) => ({ ...turn })),
+                    )
+                    .catch(() => undefined)
+                },
+                transcript: (role, text, final) =>
+                  void registration.events.emit("transcript", { callID: entry.callID, role, text, final }),
+                task: (taskID, text, status, detail) =>
+                  void registration.events.emit(
+                    "task",
+                    defined({ callID: entry.callID, taskID, text, status, detail }),
+                  ),
+                activity: (scope, busy, label) =>
+                  void registration.events.emit("activity", defined({ callID: entry.callID, scope, busy, label })),
+                closed: (reason) => finish("closed", reason),
+                error: (message) => {
+                  log?.write({ type: "error", message })
+                  emitState("error", message)
+                },
+                end: (reason) => {
+                  log?.write({ type: "end", reason })
+                  finish("closed", reason)
+                },
+              },
+              log,
+              link.calls,
+            )
             emitState("live")
           })
           .catch((cause) => finish("error", cause instanceof Error ? cause.message : String(cause)))
 
-        return { callID: call.callID, sdp: call.sdp, model: MODEL, voice, voiceSessionID: voiceSession.id }
+        return {
+          callID: call.callID,
+          sdp: call.sdp,
+          model: MODEL,
+          voice,
+          voiceSessionID: voiceSession.id,
+          voiceTitle,
+          call: link.calls,
+          previous: previous.slice(-8),
+        }
       },
 
       stop: async (input) => {

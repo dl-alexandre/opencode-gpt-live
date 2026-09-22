@@ -39,16 +39,14 @@ const status = await live.status({}, { location })
 console.log("status", status)
 if (!status.signedIn) process.exit(1)
 
-const sessionID =
-  values.session ?? (await client.session.create({ location, title: "GPT-Live e2e" } as never)).id
+const sessionID = values.session ?? (await client.session.create({ location, title: "GPT-Live e2e" } as never)).id
 console.log("session", sessionID)
 
 let input: unknown = undefined
 let output: unknown = undefined
 if (!values.devices) {
   const speech =
-    values.speak ??
-    "Hi there. Please ask OpenCode how many files are in this project and what they are called."
+    values.speak ?? "Hi there. Please ask OpenCode how many files are in this project and what they are called."
   const aiff = path.join(directory, "gpt-live-prompt.aiff")
   const wav = path.join(directory, "gpt-live-prompt.wav")
   await Bun.$`say -o ${aiff} ${speech}`.quiet()

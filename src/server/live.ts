@@ -252,7 +252,10 @@ export class Sideband {
     for (let attempt = 0; attempt < 5; attempt++) {
       input.signal?.throwIfAborted()
       try {
-        await sideband.open(`${SIDEBAND_URL}${encodeURIComponent(input.callID)}`, headers(input.auth, input.ids, input.version))
+        await sideband.open(
+          `${SIDEBAND_URL}${encodeURIComponent(input.callID)}`,
+          headers(input.auth, input.ids, input.version),
+        )
         return sideband
       } catch (error) {
         lastError = error

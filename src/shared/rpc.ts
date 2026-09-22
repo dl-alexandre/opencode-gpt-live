@@ -1,5 +1,10 @@
-import { Rpc } from "@opencode/plugin/rpc"
+import type { Rpc } from "@opencode/plugin/rpc"
 import { z } from "zod"
+
+/** Type-only stand-in for Rpc.define, so the terminal bundle does not pull in the schema runtime. */
+function define<const D extends Rpc.PortableDefinition>(definition: D): D {
+  return definition
+}
 
 export const VOICES = ["cove", "juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol"] as const
 export type Voice = (typeof VOICES)[number]
@@ -16,7 +21,7 @@ export type TaskStatus = z.infer<typeof TaskStatus>
  * Contract between the terminal plugin (audio, UI) and the server plugin
  * (ChatGPT credentials, GPT-Live control channel, OpenCode session bridge).
  */
-export const GptLive = Rpc.define({
+export const GptLive = define({
   id: "gptlive",
   methods: {
     start: {
@@ -24,6 +29,8 @@ export const GptLive = Rpc.define({
         sessionID: z.string(),
         sdp: z.string(),
         voice: z.enum(VOICES).optional(),
+        /** Start a new voice session instead of continuing the linked one. */
+        fresh: z.boolean().optional(),
       }),
       output: z.object({
         callID: z.string(),
@@ -31,6 +38,11 @@ export const GptLive = Rpc.define({
         model: z.string(),
         voice: z.string(),
         voiceSessionID: z.string(),
+        voiceTitle: z.string(),
+        /** 1 for the first call in this voice session. */
+        call: z.number(),
+        /** The last lines of the previous call, for context in the UI. */
+        previous: z.array(z.object({ role: Role, text: z.string() })),
       }),
       errors: {
         not_signed_in: z.object({ reason: z.string() }),

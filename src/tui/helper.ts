@@ -61,10 +61,7 @@ export async function ensureHelper(onProgress?: (message: string) => void): Prom
   const asset = `gpt-live-host-${process.platform}-${process.arch}${process.platform === "win32" ? ".exe" : ""}`
   const base = `https://github.com/malhashemi/opencode-gpt-live/releases/download/v${pkg.version}`
   onProgress?.(`Downloading the GPT-Live audio helper (${process.platform}-${process.arch})…`)
-  const [binary, sums] = await Promise.all([
-    fetch(`${base}/${asset}`),
-    fetch(`${base}/SHA256SUMS`),
-  ])
+  const [binary, sums] = await Promise.all([fetch(`${base}/${asset}`), fetch(`${base}/SHA256SUMS`)])
   if (!binary.ok) throw new Error(`Could not download the audio helper (${binary.status}) from ${base}/${asset}`)
   if (!sums.ok) throw new Error(`Could not download helper checksums (${sums.status})`)
   const bytes = new Uint8Array(await binary.arrayBuffer())
@@ -73,7 +70,8 @@ export async function ensureHelper(onProgress?: (message: string) => void): Prom
     .map((line) => line.trim().split(/\s+/))
     .find(([, name]) => name?.replace(/^\*/, "") === asset)?.[0]
   const actual = new Bun.CryptoHasher("sha256").update(bytes).digest("hex")
-  if (!expected || expected.toLowerCase() !== actual) throw new Error("Audio helper checksum mismatch; refusing to run it")
+  if (!expected || expected.toLowerCase() !== actual)
+    throw new Error("Audio helper checksum mismatch; refusing to run it")
   const directory = cacheDirectory()
   await mkdir(directory, { recursive: true })
   const target = path.join(directory, BINARY)
@@ -193,7 +191,11 @@ export class HelperProcess {
   async start(options: { input?: unknown; output?: unknown } = {}): Promise<string> {
     await this.ready
     const offer = this.expect("offer")
-    this.send({ type: "start", ...(options.input ? { input: options.input } : {}), ...(options.output ? { output: options.output } : {}) })
+    this.send({
+      type: "start",
+      ...(options.input ? { input: options.input } : {}),
+      ...(options.output ? { output: options.output } : {}),
+    })
     return String((await offer).sdp)
   }
 
