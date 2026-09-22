@@ -1,0 +1,94 @@
+import { Rpc } from "@opencode/plugin/rpc"
+import { z } from "zod"
+
+export const VOICES = ["cove", "juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol"] as const
+export type Voice = (typeof VOICES)[number]
+
+export const Role = z.enum(["user", "assistant"])
+
+export const CallState = z.enum(["connecting", "live", "closed", "error"])
+export type CallState = z.infer<typeof CallState>
+
+export const TaskStatus = z.enum(["queued", "running", "done", "failed", "cancelled"])
+export type TaskStatus = z.infer<typeof TaskStatus>
+
+/**
+ * Contract between the terminal plugin (audio, UI) and the server plugin
+ * (ChatGPT credentials, GPT-Live control channel, OpenCode session bridge).
+ */
+export const GptLive = Rpc.define({
+  id: "gptlive",
+  methods: {
+    start: {
+      input: z.object({
+        sessionID: z.string(),
+        sdp: z.string(),
+        voice: z.enum(VOICES).optional(),
+      }),
+      output: z.object({
+        callID: z.string(),
+        sdp: z.string(),
+        model: z.string(),
+        voice: z.string(),
+        voiceSessionID: z.string(),
+      }),
+      errors: {
+        not_signed_in: z.object({ reason: z.string() }),
+        busy: z.object({ callID: z.string() }),
+        rejected: z.object({ status: z.number() }),
+      },
+    },
+    stop: {
+      input: z.object({ callID: z.string() }),
+      output: z.object({ stopped: z.boolean() }),
+    },
+    status: {
+      input: z.object({}),
+      output: z.object({
+        signedIn: z.boolean(),
+        plan: z.string().optional(),
+        callID: z.string().optional(),
+        sessionID: z.string().optional(),
+        voiceSessionID: z.string().optional(),
+      }),
+    },
+    say: {
+      input: z.object({ callID: z.string(), text: z.string() }),
+      output: z.object({ sent: z.boolean() }),
+    },
+  },
+  events: {
+    state: {
+      schema: z.object({
+        callID: z.string(),
+        state: CallState,
+        message: z.string().optional(),
+      }),
+    },
+    transcript: {
+      schema: z.object({
+        callID: z.string(),
+        role: Role,
+        text: z.string(),
+        final: z.boolean(),
+      }),
+    },
+    task: {
+      schema: z.object({
+        callID: z.string(),
+        taskID: z.string(),
+        text: z.string(),
+        status: TaskStatus,
+        detail: z.string().optional(),
+      }),
+    },
+    activity: {
+      schema: z.object({
+        callID: z.string(),
+        scope: z.enum(["voice", "main"]),
+        busy: z.boolean(),
+        label: z.string().optional(),
+      }),
+    },
+  },
+})

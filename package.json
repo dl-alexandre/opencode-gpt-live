@@ -1,0 +1,61 @@
+{
+  "name": "opencode-gpt-live",
+  "version": "0.1.0",
+  "description": "Talk to OpenCode with GPT-Live-1 voice using your ChatGPT subscription",
+  "license": "Apache-2.0",
+  "type": "module",
+  "author": "Mohammed Alhashemi",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/malhashemi/opencode-gpt-live.git"
+  },
+  "homepage": "https://github.com/malhashemi/opencode-gpt-live#readme",
+  "bugs": "https://github.com/malhashemi/opencode-gpt-live/issues",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "voice",
+    "gpt-live",
+    "realtime",
+    "webrtc",
+    "chatgpt"
+  ],
+  "exports": {
+    ".": "./src/server/index.ts",
+    "./tui": "./src/tui/index.tsx",
+    "./rpc": "./src/shared/rpc.ts"
+  },
+  "files": [
+    "src",
+    "scripts/postinstall.mjs",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "build:native": "cargo build --release --manifest-path native/Cargo.toml",
+    "check": "bun run typecheck && bun test"
+  },
+  "dependencies": {
+    "@opencode/plugin": "^2.0.14",
+    "zod": "4.1.8"
+  },
+  "peerDependencies": {
+    "@opentui/core": ">=0.5.10",
+    "@opentui/solid": ">=0.5.10",
+    "solid-js": ">=1.9.0"
+  },
+  "devDependencies": {
+    "@opencode/client": "2.0.14",
+    "@opentui/core": "0.5.12",
+    "@opentui/solid": "0.5.12",
+    "@types/bun": "latest",
+    "solid-js": "1.9.12",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "opencode": ">=2.0.14"
+  }
+}
