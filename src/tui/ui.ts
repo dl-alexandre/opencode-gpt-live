@@ -5,7 +5,8 @@
 import type { RGBA, Renderable, TextRenderable } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { Entry, VoiceController } from "./controller"
-import { LOWER_BLOCKS, ORBIT, duration, flap, pulse, shimmer, spinner, waveColumns, type Column } from "./visuals"
+import { GlowCanvas, type Rgb } from "./glow"
+import { duration, flap, pulse, shimmer, smoothWave, spinner } from "./visuals"
 
 type Context = Plugin.Context
 type Theme = Context["theme"]
@@ -70,13 +71,6 @@ function palette(theme: Theme) {
 
 type Palette = ReturnType<typeof palette>
 
-function barColor(p: Palette, column: Column) {
-  const scale = column.side === "mic" ? p.mic : p.speaker
-  const base =
-    column.heat < 0.5 ? mix(scale[0], scale[1], column.heat * 2) : mix(scale[1], scale[2], (column.heat - 0.5) * 2)
-  return mix(p.dim, base, 0.35 + column.heat * 0.65)
-}
-
 function shimmerChunks(text: string, time: number, color: RGBA, glow: RGBA): Chunk[] {
   const letters = [...text]
   const light = shimmer(letters.length, time)
@@ -97,7 +91,7 @@ export interface View {
   animating(now: number): boolean
 }
 
-/** The main-UI call strip above the prompt: status, mirrored waveform, activity. */
+/** The main-UI call strip above the prompt: status, smooth waveform, activity. */
 export function voiceStrip(context: Context, voice: VoiceController, sessionID: () => string | undefined): View {
   const renderer = context.renderer
   const root = new core.BoxRenderable(renderer, {
@@ -106,14 +100,28 @@ export function voiceStrip(context: Context, voice: VoiceController, sessionID: 
     paddingRight: 1,
     flexShrink: 0,
   })
-  const header = new core.TextRenderable(renderer, { content: "", wrapMode: "none" })
-  const top = new core.TextRenderable(renderer, { content: "", wrapMode: "none" })
-  const bottom = new core.TextRenderable(renderer, { content: "", wrapMode: "none" })
-  const activity = new core.TextRenderable(renderer, { content: "", wrapMode: "none" })
-  for (const child of [header, top, bottom, activity]) root.add(child)
+  // Single-line rows get an explicit height so they never collapse onto each other.
+  const line = () => new core.TextRenderable(renderer, { content: "", wrapMode: "none", height: 1, flexShrink: 0 })
+  const header = line()
+  const wave = [line(), line(), line()]
+  const activity = line()
+  // Terminals with kitty graphics get an anti-aliased image waveform; others use braille.
+  const glow = glowWave(context, 3)
+  const waveBox = new core.BoxRenderable(renderer, {
+    flexDirection: "column",
+    height: 3,
+    flexShrink: 0,
+    alignItems: "center",
+  })
+  if (glow) waveBox.add(glow.image)
+  for (const child of wave) waveBox.add(child)
+  for (const child of [header, waveBox, activity]) root.add(child)
   root.visible = false
 
   const shortcut = (id: string, fallback: string) => context.keymap.shortcuts(id)[0] ?? fallback
+  // Smoothed levels so the waveform swells and settles instead of flickering.
+  let level = 0
+  let speaker = 0
 
   return {
     root,
@@ -155,50 +163,61 @@ export function voiceStrip(context: Context, voice: VoiceController, sessionID: 
       const short: Chunk[] = [chunk(`${shortcut("gptlive.toggle", "/voice")}`, p.muted), chunk(" end", p.dim)]
       header.content = styled(row(left, width(left) + width(full) + 2 <= total ? full : short, total))
 
-      // Waveform: mic flows into the orb from the left, GPT-Live flows out to the right.
-      const waveWidth = Math.max(21, Math.min(total, 121)) | 1
-      const columns = waveColumns({
+      // Waveform: a straight line at rest, a smooth mirrored wave while anyone speaks.
+      const mic = state.muted ? 0 : state.micLevel
+      const target = Math.max(mic, state.speakerLevel)
+      level += (target - level) * (target > level ? 0.45 : 0.18)
+      speaker += ((state.speakerLevel >= mic ? 1 : 0) - speaker) * 0.25
+      const active = mix(mix(p.mic[1], p.speaker[1], speaker), mix(p.mic[2], p.speaker[2], speaker), pulse(now, 1600))
+      const restColor = state.phase === "connecting" ? mix(p.dim, p.warn, 0.35) : p.dim
+      const waveWidth = Math.max(20, Math.min(total, 120))
+      const rows = smoothWave({
         width: waveWidth,
+        rows: 3,
         time: now - state.startedAt,
         phase: state.phase,
         liveFor: state.liveAt ? now - state.liveAt : Number.POSITIVE_INFINITY,
-        mic: state.mic,
-        speaker: state.speaker,
-        muted: state.muted,
+        // Perceptual curve: quiet speech should still move the line.
+        level: Math.min(1, Math.sqrt(level) * 1.1),
       })
-      const orb =
-        state.phase === "connecting"
-          ? { glyph: spinner(now, ORBIT, 110), fg: p.warn }
-          : state.speakerLevel > 0.12
-            ? { glyph: "◉", fg: mix(p.speaker[1], p.speaker[2], pulse(now, 500)) }
-            : !state.muted && state.micLevel > 0.12
-              ? { glyph: "●", fg: mix(p.mic[1], p.mic[2], pulse(now, 500)) }
-              : state.muted
-                ? { glyph: "⊘", fg: p.error }
-                : { glyph: "◎", fg: mix(p.dim, p.accent, pulse(now, 2200)) }
+      if (glow?.active()) {
+        for (const text of wave) if (text.visible) text.visible = false
+        glow.draw(now, {
+          columns: waveWidth,
+          time: now - state.startedAt,
+          phase: state.phase,
+          liveFor: state.liveAt ? now - state.liveAt : Number.POSITIVE_INFINITY,
+          level: Math.min(1, Math.sqrt(level) * 1.1),
+          colors: [
+            rgb(mix(p.mic[1], p.speaker[1], speaker)),
+            rgb(mix(p.mic[2], p.speaker[0], speaker)),
+            rgb(mix(p.mic[0], p.speaker[2], speaker)),
+          ],
+          rest: rgb(restColor),
+        })
+      } else {
+        glow?.hide()
+        for (const text of wave) if (!text.visible) text.visible = true
+      }
       const pad = chunk(" ".repeat(Math.max(0, Math.floor((total - waveWidth) / 2))))
-      top.content = styled([
-        pad,
-        ...columns.map((column) =>
-          column.side === "center"
-            ? chunk(orb.glyph, orb.fg, { bold: true })
-            : chunk(LOWER_BLOCKS[column.up], barColor(p, column)),
-        ),
-      ])
-      bottom.content = styled([
-        pad,
-        ...columns.map((column) => {
-          if (column.side === "center" || column.down === 0) return chunk(" ")
-          // A mirrored reflection: inverted lower blocks read as bars hanging from the center line.
-          return chunk(LOWER_BLOCKS[8 - column.down], p.bg, { bg: mix(barColor(p, column), p.bg, 0.35) })
-        }),
-      ])
+      if (!glow?.active())
+        rows.forEach((cells, index) => {
+          wave[index].content = styled([
+            pad,
+            ...cells.map((cell) =>
+              cell.energy > 0
+                ? chunk(cell.char, mix(restColor, active, 0.45 + cell.energy * 0.55))
+                : chunk(cell.char, restColor),
+            ),
+          ])
+        })
 
       // Activity line.
       const you: Chunk[] = [
         chunk("you ", p.mic[1]),
         chunk(state.muted ? "muted" : state.micLevel > 0.12 ? "speaking" : "listening", state.muted ? p.error : p.dim),
       ]
+      if (state.speakerLevel > 0.12) you.push(chunk("   ", p.dim), chunk("GPT-Live speaking", p.speaker[1]))
       if (state.voiceActivity) {
         you.push(
           chunk("   "),
@@ -215,6 +234,80 @@ export function voiceStrip(context: Context, voice: VoiceController, sessionID: 
           ]
         : [chunk(state.queued ? `OpenCode · ${state.queued} queued` : "OpenCode idle", p.dim)]
       activity.content = styled(row(you, main, total))
+    },
+  }
+}
+
+function rgb(color: RGBA): Rgb {
+  const [r, g, b] = color.toInts()
+  return [r, g, b]
+}
+
+interface GlowFrame {
+  columns: number
+  time: number
+  phase: VoiceController["state"]["phase"]
+  liveFor: number
+  level: number
+  colors: readonly [Rgb, Rgb, Rgb]
+  rest: Rgb
+}
+
+/**
+ * The image waveform: rasterized per frame and published through a native image pool,
+ * shown with the kitty graphics protocol. Returns undefined when the terminal cannot
+ * display images, and turns itself off if the image path ever fails.
+ */
+function glowWave(context: Context, rows: number) {
+  const renderer = context.renderer
+  // "image" forces it (e.g. inside a multiplexer that hides kitty graphics), "braille" disables it.
+  const mode = (context.options as { waveform?: string }).waveform ?? process.env.GPT_LIVE_WAVEFORM
+  if (mode === "braille") return undefined
+  if (!renderer.capabilities?.kitty_graphics && mode !== "image") return undefined
+  let failed = false
+  const image = new core.ImageRenderable(renderer, {
+    height: rows,
+    fit: "fill",
+    protocol: "kitty",
+    flexShrink: 0,
+    onError: () => {
+      failed = true
+    },
+  })
+  image.visible = false
+  let pool: InstanceType<Core["NativeImagePool"]> | undefined
+  let canvas: GlowCanvas | undefined
+  const dispose = () => {
+    pool?.dispose()
+    pool = undefined
+  }
+  return {
+    image,
+    active: () => !failed && !image.isDestroyed,
+    hide() {
+      if (image.visible) image.visible = false
+    },
+    draw(now: number, frame: GlowFrame) {
+      try {
+        // Pixels per cell: roughly 8x16, enough for a smooth anti-aliased curve.
+        const width = frame.columns * 8
+        const height = rows * 16
+        if (!canvas || canvas.width !== width || canvas.height !== height) {
+          dispose()
+          canvas = new GlowCanvas(width, height)
+          pool = new core.NativeImagePool({ width, height, capacity: 3 })
+        }
+        if (image.width !== frame.columns) image.width = frame.columns
+        const pixels = canvas.draw(frame)
+        const published = pool!.publishRgba(pixels)
+        if (published) image.source = published
+        if (!image.visible) image.visible = true
+      } catch {
+        failed = true
+        image.visible = false
+        dispose()
+      }
+      void now
     },
   }
 }
@@ -277,8 +370,10 @@ export function transcriptPanel(context: Context, voice: VoiceController): View 
     paddingLeft: 1,
     paddingRight: 1,
   })
-  const header = new core.TextRenderable(renderer, { content: "", wrapMode: "none" })
-  const devices = new core.TextRenderable(renderer, { content: "", wrapMode: "none" })
+  // Fixed heights: two empty single-line texts otherwise collapse onto the same row, and
+  // the header's glyphs show through the gaps in the device line.
+  const header = new core.TextRenderable(renderer, { content: "", wrapMode: "none", height: 1, flexShrink: 0 })
+  const devices = new core.TextRenderable(renderer, { content: "", wrapMode: "none", height: 1, flexShrink: 0 })
   const scroll = new core.ScrollBoxRenderable(renderer, {
     flexGrow: 1,
     stickyScroll: true,
@@ -356,7 +451,7 @@ export function transcriptPanel(context: Context, voice: VoiceController): View 
 
 /** A small live indicator for the footer. */
 export function footerBadge(context: Context, voice: VoiceController): View {
-  const text = new core.TextRenderable(context.renderer, { content: "", wrapMode: "none" })
+  const text = new core.TextRenderable(context.renderer, { content: "", wrapMode: "none", height: 1 })
   text.visible = false
   return {
     root: text,
@@ -416,7 +511,7 @@ export class Frames {
         // Keep other views and the call alive if one view fails to draw.
       }
     }
-    if (animating && !this.timer) this.timer = setInterval(() => this.tick(), 50)
+    if (animating && !this.timer) this.timer = setInterval(() => this.tick(), 33)
     if (!animating && this.timer) {
       clearInterval(this.timer)
       this.timer = undefined

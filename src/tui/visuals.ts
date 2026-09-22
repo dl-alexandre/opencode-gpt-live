@@ -3,29 +3,13 @@
  * so it can be unit-tested and rendered by any component.
  */
 
-export const LOWER_BLOCKS = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"] as const
 export const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const
 export const ORBIT = ["◜", "◠", "◝", "◞", "◡", "◟"] as const
 
 export type Phase = "idle" | "connecting" | "live" | "closing" | "error"
 
-/** A bar column: height in eighths above and below the center line (0..8 each). */
-export interface Column {
-  up: number
-  down: number
-  /** 0..1 intensity used for color. */
-  heat: number
-  /** Which side of the orb this column belongs to. */
-  side: "mic" | "speaker" | "center"
-}
-
 export function clamp(value: number, min = 0, max = 1) {
   return Math.min(max, Math.max(min, value))
-}
-
-/** Perceptual easing so quiet speech still moves the bars. */
-export function shape(level: number) {
-  return clamp(Math.sqrt(clamp(level)) * 1.15)
 }
 
 /** Keeps a fixed-size rolling history, newest last. */
@@ -35,73 +19,7 @@ export function pushHistory(history: number[], value: number, size: number) {
   return next
 }
 
-export interface WaveInput {
-  width: number
-  /** Milliseconds since the call UI started; drives idle motion. */
-  time: number
-  phase: Phase
-  /** Milliseconds since the call went live; drives the connect burst. */
-  liveFor: number
-  mic: readonly number[]
-  speaker: readonly number[]
-  muted: boolean
-}
-
 const BURST_MS = 900
-
-/**
- * Builds a mirrored waveform: the user's microphone history flows into the orb from the
- * left, GPT-Live's voice flows out to the right, newest samples nearest the center.
- */
-export function waveColumns(input: WaveInput): Column[] {
-  const width = Math.max(9, input.width | 0)
-  const center = Math.floor(width / 2)
-  const half = center
-  const columns: Column[] = []
-  const t = input.time / 1000
-
-  for (let x = 0; x < width; x++) {
-    if (x === center) {
-      columns.push({ up: 0, down: 0, heat: 1, side: "center" })
-      continue
-    }
-    const side = x < center ? "mic" : "speaker"
-    const distance = Math.abs(x - center) // 1..half
-    const edge = distance / half // 0..1 toward the edges
-    let level = 0
-
-    if (input.phase === "connecting") {
-      // A scanner sweeping back and forth while the call is dialing.
-      const period = 1.6
-      const phase = (t % period) / period
-      const sweep = phase < 0.5 ? phase * 2 : 2 - phase * 2
-      const head = sweep * (width - 1)
-      const gap = Math.abs(x - head)
-      level = Math.exp(-(gap * gap) / 18) * 0.85 + 0.04 * (1 + Math.sin(t * 6 + x * 0.7))
-    } else if (input.phase === "live" || input.phase === "closing") {
-      const history = side === "mic" ? input.mic : input.speaker
-      const sample = history[history.length - distance] ?? 0
-      level = side === "mic" && input.muted ? 0 : shape(sample)
-      // Gentle breathing so the strip feels alive in silence.
-      const breath = 0.05 + 0.04 * Math.sin(t * 2.2 + distance * 0.45)
-      level = Math.max(level, breath * (1 - edge * 0.6))
-      // Connect burst: a ring racing outward from the orb right after going live.
-      if (input.liveFor < BURST_MS) {
-        const progress = input.liveFor / BURST_MS
-        const ring = progress * half * 1.15
-        const gap = Math.abs(distance - ring)
-        level = Math.max(level, Math.exp(-(gap * gap) / 6) * (1 - progress * 0.7))
-      }
-      if (input.phase === "closing") level *= 0.4
-    } else if (input.phase === "error") {
-      level = 0.08 * (1 + Math.sin(t * 3 + x))
-    }
-
-    const eighths = Math.round(clamp(level) * 8)
-    columns.push({ up: eighths, down: Math.max(0, eighths - 1), heat: clamp(level * (1.1 - edge * 0.5)), side })
-  }
-  return columns
-}
 
 /** Shimmer: a soft highlight that sweeps across text. Returns 0..1 per character. */
 export function shimmer(length: number, time: number, speed = 28, spread = 4) {
@@ -181,4 +99,99 @@ export function arrivalsFor(previous: string, previousArrivals: readonly number[
 export function animating(arrivals: readonly number[], now: number) {
   const last = arrivals[arrivals.length - 1]
   return last !== undefined && now - last < FLAP_SETTLE_MS + FLAP_GLOW_MS
+}
+
+const BRAILLE_BITS = [
+  [0x01, 0x08],
+  [0x02, 0x10],
+  [0x04, 0x20],
+  [0x40, 0x80],
+] as const
+
+export interface WaveCell {
+  char: string
+  /** 0..1 how much the cell belongs to the moving wave (vs. the resting line). */
+  energy: number
+}
+
+export interface SmoothWaveInput {
+  width: number
+  time: number
+  phase: Phase
+  /** Milliseconds since the call went live. */
+  liveFor: number
+  /** Smoothed voice level, 0..1. */
+  level: number
+  /** Number of text rows (odd numbers keep the resting line centered). */
+  rows?: number
+}
+
+/**
+ * A smooth waveform drawn with braille dots over a straight center line. At rest it is a
+ * flat line; with voice, two mirrored waves swell above and below it, tapering to the
+ * edges. Braille needs no background color, so it blends into any surface.
+ */
+export function smoothWave(input: SmoothWaveInput): WaveCell[][] {
+  const rows = Math.max(1, input.rows ?? 3) | 1
+  const width = Math.max(8, input.width | 0)
+  const dotsX = width * 2
+  const dotsY = rows * 4
+  const center = (dotsY - 1) / 2
+  const reach = center - 0.25
+  const t = input.time / 1000
+
+  let amplitude = clamp(input.level)
+  let packet: ((x: number) => number) | undefined
+  if (input.phase === "connecting") {
+    // A small pulse gliding back and forth along the line while dialing.
+    const period = 1.8
+    const p = (t % period) / period
+    const head = (p < 0.5 ? p * 2 : 2 - p * 2) * (dotsX - 1)
+    packet = (x) => Math.exp(-((x - head) ** 2) / 60)
+    amplitude = 0.55
+  } else if (input.phase === "live" && input.liveFor < BURST_MS) {
+    amplitude = Math.max(amplitude, 0.8 * (1 - input.liveFor / BURST_MS))
+  } else if (input.phase !== "live" && input.phase !== "closing") {
+    amplitude = 0
+  }
+
+  const bits: number[][] = Array.from({ length: rows }, () => new Array(width).fill(0))
+  const energy: number[] = new Array(width).fill(0)
+  const plot = (x: number, y: number) => {
+    const row = Math.round(y)
+    if (row < 0 || row >= dotsY) return
+    const cell = Math.floor(x / 2)
+    bits[Math.floor(row / 4)][cell] |= BRAILLE_BITS[row % 4][x % 2]
+  }
+
+  let previous: [number, number] | undefined
+  for (let x = 0; x < dotsX; x++) {
+    const u = x / (dotsX - 1)
+    // Hann taper keeps the swell centered and the ends pinned to the line.
+    const taper = 0.5 - 0.5 * Math.cos(2 * Math.PI * u)
+    const envelope = amplitude * (packet ? packet(x) : taper)
+    const wave =
+      0.62 * Math.sin(x * 0.19 - t * 5.2) + 0.28 * Math.sin(x * 0.43 + t * 3.1) + 0.1 * Math.sin(x * 0.9 - t * 8.3)
+    const offset = envelope * reach * wave
+    const upper = center - Math.abs(offset)
+    const lower = center + Math.abs(offset)
+    energy[Math.floor(x / 2)] = Math.max(energy[Math.floor(x / 2)], Math.min(1, Math.abs(offset) / Math.max(1, reach)))
+    if (Math.abs(offset) < 0.6) {
+      previous = undefined
+      continue
+    }
+    // Connect to the previous sample so the strands read as continuous curves.
+    const [pu, pl] = previous ?? [upper, lower]
+    for (let y = Math.min(pu, upper); y <= Math.max(pu, upper); y += 0.5) plot(x, y)
+    for (let y = Math.min(pl, lower); y <= Math.max(pl, lower); y += 0.5) plot(x, y)
+    previous = [upper, lower]
+  }
+
+  const middle = Math.floor(rows / 2)
+  return bits.map((line, row) =>
+    line.map((value, x) => {
+      if (value) return { char: String.fromCharCode(0x2800 + value), energy: Math.max(0.15, energy[x]) }
+      return { char: row === middle ? "─" : " ", energy: 0 }
+    }),
+  )
 }

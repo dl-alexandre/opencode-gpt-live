@@ -1,38 +1,37 @@
 import { describe, expect, test } from "bun:test"
-import { animating, arrivalsFor, duration, flap, pushHistory, shimmer, waveColumns } from "../src/tui/visuals"
+import { animating, arrivalsFor, duration, flap, pushHistory, shimmer, smoothWave } from "../src/tui/visuals"
 
-const base = { width: 21, time: 1000, liveFor: 10_000, mic: [], speaker: [], muted: false }
+const base = { width: 40, time: 1000, liveFor: 10_000, rows: 3 }
+const text = (rows: { char: string }[][]) => rows.map((row) => row.map((cell) => cell.char).join(""))
 
-describe("waveform", () => {
-  test("has an orb in the middle and one column per cell", () => {
-    const columns = waveColumns({ ...base, phase: "live" })
-    expect(columns).toHaveLength(21)
-    expect(columns[10].side).toBe("center")
-    expect(columns[0].side).toBe("mic")
-    expect(columns[20].side).toBe("speaker")
+describe("smooth waveform", () => {
+  test("is a straight center line at rest", () => {
+    expect(text(smoothWave({ ...base, phase: "live", level: 0 }))).toEqual([
+      " ".repeat(40),
+      "─".repeat(40),
+      " ".repeat(40),
+    ])
   })
-  test("newest samples sit next to the orb", () => {
-    const columns = waveColumns({ ...base, phase: "live", mic: [0, 0, 1], speaker: [1, 0, 0] })
-    expect(columns[9].up).toBe(8)
-    expect(columns[11].up).toBeLessThan(8)
-    expect(columns[13].up).toBe(8)
+  test("swells above and below the line with voice, pinned at the ends", () => {
+    const rows = smoothWave({ ...base, phase: "live", level: 0.9 })
+    const drawn = (row: { energy: number }[]) => row.filter((cell) => cell.energy > 0).length
+    expect(drawn(rows[0])).toBeGreaterThan(0)
+    expect(drawn(rows[2])).toBeGreaterThan(0)
+    expect(rows[1][0].char).toBe("─")
+    expect(rows[1][39].char).toBe("─")
   })
-  test("muted microphone stays flat apart from breathing", () => {
-    const columns = waveColumns({ ...base, phase: "live", mic: [1, 1, 1], muted: true })
-    expect(columns[9].up).toBeLessThanOrEqual(1)
+  test("uses braille and the line only, never background-colored blocks", () => {
+    for (const row of text(smoothWave({ ...base, phase: "live", level: 1 })))
+      expect(row).toMatch(/^[\u2800-\u28ff─ ]+$/)
   })
-  test("connect burst lights up columns right after going live", () => {
-    const quiet = waveColumns({ ...base, phase: "live" })
-    const burst = waveColumns({ ...base, phase: "live", liveFor: 300 })
-    const energy = (columns: typeof quiet) => columns.reduce((sum, column) => sum + column.up, 0)
-    expect(energy(burst)).toBeGreaterThan(energy(quiet))
+  test("connecting shows a pulse that moves", () => {
+    const at = (time: number) =>
+      text(smoothWave({ ...base, phase: "connecting", level: 0, time }))[1].search(/[\u2801-\u28ff]/)
+    expect(at(200)).not.toBe(at(700))
   })
-  test("connecting shows a moving scanner", () => {
-    const a = waveColumns({ ...base, phase: "connecting", time: 100 })
-    const b = waveColumns({ ...base, phase: "connecting", time: 600 })
-    const peak = (columns: typeof a) =>
-      columns.findIndex((column) => column.up === Math.max(...columns.map((c) => c.up)))
-    expect(peak(a)).not.toBe(peak(b))
+  test("connect burst swells right after going live", () => {
+    const rows = text(smoothWave({ ...base, phase: "live", level: 0, liveFor: 200 }))
+    expect(rows[0].trim().length + rows[2].trim().length).toBeGreaterThan(0)
   })
 })
 
