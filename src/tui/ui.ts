@@ -6,6 +6,7 @@ import type { RGBA, Renderable, TextRenderable } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { Entry, VoiceController } from "./controller"
 import { GlowCanvas, type Rgb } from "./glow"
+import { HerdrStream, detectHerdr, type HerdrPane } from "./herdr"
 import { duration, flap, pulse, shimmer, smoothWave, spinner } from "./visuals"
 
 type Context = Plugin.Context
@@ -89,6 +90,8 @@ export interface View {
   update(now: number): void
   /** True while the view needs frame-by-frame redraws. */
   animating(now: number): boolean
+  /** Releases resources outside the renderable tree (e.g. herdr image layers). */
+  dispose?(): void
 }
 
 /** The main-UI call strip above the prompt: status, smooth waveform, activity. */
@@ -113,7 +116,7 @@ export function voiceStrip(context: Context, voice: VoiceController, sessionID: 
     flexShrink: 0,
     alignItems: "center",
   })
-  if (glow) waveBox.add(glow.image)
+  if (glow) waveBox.add(glow.node)
   for (const child of wave) waveBox.add(child)
   for (const child of [header, waveBox, activity]) root.add(child)
   root.visible = false
@@ -125,11 +128,15 @@ export function voiceStrip(context: Context, voice: VoiceController, sessionID: 
 
   return {
     root,
+    dispose: () => glow?.hide(),
     animating: () => voice.owns(sessionID()),
     update(now) {
       const show = voice.owns(sessionID())
       if (root.visible !== show) root.visible = show
-      if (!show) return
+      if (!show) {
+        glow?.hide()
+        return
+      }
       const state = voice.state
       const p = palette(context.theme)
       const total = Math.max(24, (root.width || renderer.width) - 2)
@@ -183,7 +190,7 @@ export function voiceStrip(context: Context, voice: VoiceController, sessionID: 
       })
       if (glow?.active()) {
         for (const text of wave) if (text.visible) text.visible = false
-        glow.draw(now, {
+        glow.draw({
           columns: waveWidth,
           time: now - state.startedAt,
           phase: state.phase,
@@ -265,17 +272,40 @@ interface GlowFrame {
   rest: Rgb
 }
 
+interface WaveSurface {
+  /** The renderable that occupies the waveform's space in the layout. */
+  readonly node: Renderable
+  active(): boolean
+  hide(): void
+  draw(frame: GlowFrame): void
+}
+
 /**
- * The image waveform: rasterized per frame and published through a native image pool,
- * shown with the kitty graphics protocol. Returns undefined when the terminal cannot
- * display images, and turns itself off if the image path ever fails.
+ * Picks the best waveform surface for this terminal:
+ * - inside herdr: frames streamed through herdr's pane graphics API (herdr does not show
+ *   kitty images printed by programs);
+ * - terminals with kitty graphics (Ghostty, kitty, WezTerm): an image renderable;
+ * - otherwise none, and the caller draws the braille waveform.
+ * The `waveform` plugin option or GPT_LIVE_WAVEFORM can force "image" or "braille".
  */
-function glowWave(context: Context, rows: number) {
+function glowWave(context: Context, rows: number): WaveSurface | undefined {
   const renderer = context.renderer
-  // "image" forces it (e.g. inside a multiplexer that hides kitty graphics), "braille" disables it.
   const mode = (context.options as { waveform?: string }).waveform ?? process.env.GPT_LIVE_WAVEFORM
   if (mode === "braille") return undefined
+  const herdr = detectHerdr()
+  debug({
+    event: "wave-surface",
+    mode: mode ?? "auto",
+    herdr: !!herdr,
+    capabilities: renderer.capabilities,
+    env: { TERM: process.env.TERM, TERM_PROGRAM: process.env.TERM_PROGRAM, TMUX: !!process.env.TMUX },
+  })
+  if (herdr) return herdrWave(renderer, rows, herdr)
   if (!renderer.capabilities?.kitty_graphics && mode !== "image") return undefined
+  return kittyWave(renderer, rows)
+}
+
+function kittyWave(renderer: Context["renderer"], rows: number): WaveSurface {
   let failed = false
   const image = new core.ImageRenderable(renderer, {
     height: rows,
@@ -287,28 +317,26 @@ function glowWave(context: Context, rows: number) {
       debug({ event: "image-error", error: String(error) })
     },
   })
-  debug({
-    event: "image-created",
-    mode: mode ?? "auto",
-    capabilities: renderer.capabilities,
-    effectiveProtocol: image.effectiveProtocol,
-    transport: renderer.kittyImageTransport,
-    env: { TERM: process.env.TERM, TERM_PROGRAM: process.env.TERM_PROGRAM, TMUX: !!process.env.TMUX },
-  })
   image.visible = false
   let pool: InstanceType<Core["NativeImagePool"]> | undefined
   let canvas: GlowCanvas | undefined
+  // publishRgba returns a retained frame; the image renderable takes its own reference,
+  // so ours must be released once the next frame replaces it. Holding on to it keeps the
+  // pool's slots busy and the waveform freezes after a few frames.
+  let last: ReturnType<InstanceType<Core["NativeImagePool"]>["publishRgba"]> = null
   const dispose = () => {
+    last?.dispose()
+    last = null
     pool?.dispose()
     pool = undefined
   }
   return {
-    image,
+    node: image,
     active: () => !failed && !image.isDestroyed,
     hide() {
       if (image.visible) image.visible = false
     },
-    draw(now: number, frame: GlowFrame) {
+    draw(frame) {
       try {
         // Pixels per cell: roughly 8x16, enough for a smooth anti-aliased curve.
         const width = frame.columns * 8
@@ -319,9 +347,12 @@ function glowWave(context: Context, rows: number) {
           pool = new core.NativeImagePool({ width, height, capacity: 3 })
         }
         if (image.width !== frame.columns) image.width = frame.columns
-        const pixels = canvas.draw(frame)
-        const published = pool!.publishRgba(pixels)
-        if (published) image.source = published
+        const published = pool!.publishRgba(canvas.draw(frame))
+        if (published) {
+          image.source = published
+          last?.dispose()
+          last = published
+        }
         if (!image.visible) image.visible = true
       } catch (error) {
         failed = true
@@ -329,7 +360,38 @@ function glowWave(context: Context, rows: number) {
         dispose()
         debug({ event: "draw-error", error: String(error) })
       }
-      void now
+    },
+  }
+}
+
+function herdrWave(renderer: Context["renderer"], rows: number, pane: HerdrPane): WaveSurface {
+  // An empty box reserves the waveform's cells; herdr draws the image over them.
+  const slot = new core.BoxRenderable(renderer, { height: rows, flexShrink: 0 })
+  let failed = false
+  const stream = new HerdrStream(pane, "gptlive-wave", (error) => {
+    failed = true
+    debug({ event: "herdr-error", error })
+  })
+  let canvas: GlowCanvas | undefined
+  let lastSent = 0
+  return {
+    node: slot,
+    active: () => !failed && !slot.isDestroyed,
+    hide() {
+      stream.close()
+    },
+    draw(frame) {
+      if (slot.width !== frame.columns) slot.width = frame.columns
+      // herdr re-uploads each frame inline; ~20 fps at modest resolution keeps it light.
+      const now = Date.now()
+      if (now - lastSent < 45) return
+      const width = frame.columns * 6
+      const height = rows * 14
+      if (!canvas || canvas.width !== width || canvas.height !== height) canvas = new GlowCanvas(width, height)
+      if (slot.width <= 0) return
+      // The socket may still hold the previous buffer, so each frame gets its own copy.
+      const pixels = canvas.draw(frame).slice()
+      if (stream.send(pixels, width, height, { col: slot.x, row: slot.y, cols: frame.columns, rows })) lastSent = now
     },
   }
 }
@@ -523,6 +585,7 @@ export class Frames {
     let animating = false
     for (const view of this.views) {
       if (view.root.isDestroyed) {
+        view.dispose?.()
         this.views.delete(view)
         continue
       }
@@ -545,6 +608,7 @@ export class Frames {
     if (this.timer) clearInterval(this.timer)
     this.timer = undefined
     for (const view of this.views) {
+      view.dispose?.()
       if (!view.root.isDestroyed) view.root.destroyRecursively()
     }
     this.views.clear()
