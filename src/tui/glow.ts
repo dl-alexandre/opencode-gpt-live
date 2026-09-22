@@ -91,7 +91,7 @@ export class GlowCanvas {
       const cg = input.rest[1] + (color[1] - input.rest[1]) * vivid
       const cb = input.rest[2] + (color[2] - input.rest[2]) * vivid
       // At rest the strands overlap; weight them down so the line stays thin and quiet.
-      const weight = strand.weight * (0.45 + 0.55 * vivid)
+      const weight = strand.weight * (0.6 + 0.4 * vivid)
       let previous = center
       for (let x = 0; x < width; x++) {
         const u = x / (width - 1)

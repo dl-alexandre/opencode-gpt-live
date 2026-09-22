@@ -169,7 +169,8 @@ export function voiceStrip(context: Context, voice: VoiceController, sessionID: 
       level += (target - level) * (target > level ? 0.45 : 0.18)
       speaker += ((state.speakerLevel >= mic ? 1 : 0) - speaker) * 0.25
       const active = mix(mix(p.mic[1], p.speaker[1], speaker), mix(p.mic[2], p.speaker[2], speaker), pulse(now, 1600))
-      const restColor = state.phase === "connecting" ? mix(p.dim, p.warn, 0.35) : p.dim
+      // The resting line must read clearly on dark and translucent backgrounds.
+      const restColor = state.phase === "connecting" ? mix(p.muted, p.warn, 0.4) : mix(p.muted, p.text, 0.25)
       const waveWidth = Math.max(20, Math.min(total, 120))
       const rows = smoothWave({
         width: waveWidth,
@@ -238,6 +239,17 @@ export function voiceStrip(context: Context, voice: VoiceController, sessionID: 
   }
 }
 
+/** Developer diagnostics: GPT_LIVE_DEBUG=/path/file.jsonl records UI capability decisions. */
+export function debug(entry: Record<string, unknown>) {
+  const file = process.env.GPT_LIVE_DEBUG
+  if (!file) return
+  try {
+    require("node:fs").appendFileSync(file, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`)
+  } catch {
+    // Diagnostics must never break the UI.
+  }
+}
+
 function rgb(color: RGBA): Rgb {
   const [r, g, b] = color.toInts()
   return [r, g, b]
@@ -270,9 +282,18 @@ function glowWave(context: Context, rows: number) {
     fit: "fill",
     protocol: "kitty",
     flexShrink: 0,
-    onError: () => {
+    onError: (error) => {
       failed = true
+      debug({ event: "image-error", error: String(error) })
     },
+  })
+  debug({
+    event: "image-created",
+    mode: mode ?? "auto",
+    capabilities: renderer.capabilities,
+    effectiveProtocol: image.effectiveProtocol,
+    transport: renderer.kittyImageTransport,
+    env: { TERM: process.env.TERM, TERM_PROGRAM: process.env.TERM_PROGRAM, TMUX: !!process.env.TMUX },
   })
   image.visible = false
   let pool: InstanceType<Core["NativeImagePool"]> | undefined
@@ -302,10 +323,11 @@ function glowWave(context: Context, rows: number) {
         const published = pool!.publishRgba(pixels)
         if (published) image.source = published
         if (!image.visible) image.visible = true
-      } catch {
+      } catch (error) {
         failed = true
         image.visible = false
         dispose()
+        debug({ event: "draw-error", error: String(error) })
       }
       void now
     },

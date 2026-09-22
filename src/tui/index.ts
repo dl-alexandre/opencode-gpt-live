@@ -178,7 +178,19 @@ export function createTuiPlugin(module: Core): PluginNamespace.Definition {
         }),
       ]
 
+      // Developer switch for unattended UI tests: start a call once a session is open.
+      let autostart: ReturnType<typeof setInterval> | undefined
+      if (process.env.GPT_LIVE_AUTOSTART) {
+        autostart = setInterval(() => {
+          if (!currentSession()) return
+          clearInterval(autostart)
+          autostart = undefined
+          void start()
+        }, 500)
+      }
+
       return async () => {
+        if (autostart) clearInterval(autostart)
         for (const dispose of disposers) dispose()
         await voice.dispose()
         frames.dispose()
