@@ -248,4 +248,4 @@ change at any time.
 
 ## License
 
-[MIT](LICENSE) © Mohammed Alhashemi
+[MIT](LICENSE) © M. Adel Alhashemi
