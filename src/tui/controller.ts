@@ -150,7 +150,11 @@ export class VoiceController {
 
   private markLive() {
     this.set({ phase: "live", liveAt: Date.now() })
-    this.notice('Connected. Start talking. Say "end the call" or press F8 to hang up.', "info")
+    const hangUp = this.context.keymap.shortcuts("gptlive.toggle")[0]
+    this.notice(
+      `Connected. Start talking. Say "end the call"${hangUp ? `, press ${hangUp},` : ""} or run /voice to hang up.`,
+      "info",
+    )
   }
 
   async start(sessionID: string, voice?: Voice, fresh = false) {

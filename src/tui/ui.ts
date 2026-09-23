@@ -443,7 +443,10 @@ export function transcriptPanel(context: Context, voice: VoiceController, visibl
           empty = new core.TextRenderable(renderer, { content: "", wrapMode: "word" })
           scroll.add(empty)
         }
-        empty.content = styled([chunk("No voice call yet. Run /voice or press F8 to start one.", p.dim)])
+        const key = context.keymap.shortcuts("gptlive.toggle")[0]
+        empty.content = styled([
+          chunk(`No voice call yet. Run /voice${key ? ` or press ${key}` : ""} to start one.`, p.dim),
+        ])
       } else if (empty) {
         scroll.remove(empty)
         empty.destroy()

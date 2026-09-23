@@ -9,12 +9,14 @@ type Context = PluginNamespace.Context
 
 /** Actions that can have a keyboard shortcut, set with the `keybinds` plugin option. */
 type KeyAction = "toggle" | "stop" | "new" | "mute" | "panel" | "voice"
-/** A key ("ctrl+s"), alternatives ("f8,ctrl+x v" or ["f8", "ctrl+x v"]), or false / "none" for no key. */
+/** A key ("ctrl+s"), alternatives ("ctrl+y,f9" or ["ctrl+y", "f9"]), or false / "none" for no key. */
 type KeyOption = string | readonly string[] | false
 
 const DEFAULT_KEYS: Record<KeyAction, KeyOption> = {
-  toggle: "f8",
-  mute: "f9",
+  // Mute is the in-call reflex, so it gets the single chord; starting a call is deliberate
+  // (usually /voice) and follows OpenCode's leader pattern (v for voice).
+  toggle: "<leader>v",
+  mute: "ctrl+y",
   panel: "ctrl+s",
   stop: false,
   new: false,
