@@ -9,6 +9,10 @@ on:
         description: Version to embed in the binary (empty for development builds)
         type: string
         default: ""
+      ref:
+        description: Git ref to build (empty for the triggering commit)
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -28,6 +32,8 @@ jobs:
           - { target: win32-x64, os: windows-2022, rust: x86_64-pc-windows-msvc, smoke: true }
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
