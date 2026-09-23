@@ -3,6 +3,9 @@ updates:
   - package-ecosystem: npm
     directory: /
     schedule: { interval: weekly }
+    ignore:
+      # Must match the zod version @opencode/plugin depends on: RPC schemas cross into OpenCode.
+      - dependency-name: zod
     groups:
       minor-and-patch: { update-types: [minor, patch] }
     commit-message: { prefix: "build(deps)" }
