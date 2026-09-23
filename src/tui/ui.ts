@@ -1,12 +1,13 @@
+import type { Plugin } from "@opencode/plugin/tui"
 /**
  * Voice UI built from OpenTUI renderables on OpenCode's renderer. Views are plain objects
  * redrawn by a frame clock; nothing here depends on OpenCode's Solid runtime.
  */
 import type { RGBA, Renderable, TextRenderable } from "@opentui/core"
-import type { Plugin } from "@opencode/plugin/tui"
-import type { Entry, VoiceController } from "./controller"
+
 import { AuraCanvas, type AuraPalette, type Rgb } from "./aura"
-import { useCore as provideCore } from "./core"
+import type { Entry, VoiceController } from "./controller"
+import { type Core, useCore as provideCore } from "./core"
 import { debug, fallbackSurface, pickSurface, type Surface } from "./surface"
 import { duration, flap, pulse, shimmer, spinner } from "./visuals"
 
@@ -17,7 +18,7 @@ type Theme = Context["theme"]
  * OpenCode maps `@opentui/core` to its own runtime copy only for imports in the plugin's
  * entry file. The entry passes the module in, so every renderable here belongs to the host.
  */
-export type Core = typeof import("@opentui/core")
+export type { Core }
 let core: Core
 
 export function useCore(module: Core) {
@@ -306,8 +307,9 @@ export function voiceAura(context: Context, voice: VoiceController, visible: () 
           palette: input.palette,
         })
       surface.draw(
-        (width, height) => {
-          if (!canvas || canvas.width !== width || canvas.height !== height) canvas = new AuraCanvas(width, height)
+        (pixelWidth, pixelHeight) => {
+          if (!canvas || canvas.width !== pixelWidth || canvas.height !== pixelHeight)
+            canvas = new AuraCanvas(pixelWidth, pixelHeight)
           return canvas.draw(input)
         },
         cols,

@@ -220,12 +220,12 @@ export function chunk(text: string, maxBytes = APPEND_MAX_BYTES): string[] {
 export type Channel = "speakable" | "commentary"
 
 export function contextAppend(text: string, channel: Channel, delegationID?: string): Json[] {
-  return chunk(text).map((part) => ({
-    type: delegationID ? "delegation.context.append" : "session.context.append",
-    ...(delegationID ? { delegation_item_id: delegationID } : {}),
-    channel,
-    content: [{ type: "input_text", text: part }],
-  }))
+  return chunk(text).map((part) => {
+    const content = [{ type: "input_text", text: part }]
+    return delegationID
+      ? { type: "delegation.context.append", delegation_item_id: delegationID, channel, content }
+      : { type: "session.context.append", channel, content }
+  })
 }
 
 /** The control WebSocket for a live call. */
@@ -248,27 +248,27 @@ export class Sideband {
     signal?: AbortSignal
   }): Promise<Sideband> {
     const sideband = new Sideband(input.onEvent, input.onClose)
-    let lastError: unknown
-    for (let attempt = 0; attempt < 5; attempt++) {
+    const url = `${SIDEBAND_URL}${encodeURIComponent(input.callID)}`
+    // Up to five attempts with exponential backoff; each waits for the previous one to fail.
+    const attempt = async (index: number): Promise<Sideband> => {
       input.signal?.throwIfAborted()
       try {
-        await sideband.open(
-          `${SIDEBAND_URL}${encodeURIComponent(input.callID)}`,
-          headers(input.auth, input.ids, input.version),
-        )
+        await sideband.open(url, headers(input.auth, input.ids, input.version))
         return sideband
       } catch (error) {
-        lastError = error
-        await Bun.sleep(200 * 2 ** attempt)
+        if (index >= 4)
+          throw error instanceof Error ? error : new LiveError("GPT-Live control channel failed to connect")
+        await Bun.sleep(200 * 2 ** index)
+        return attempt(index + 1)
       }
     }
-    throw lastError instanceof Error ? lastError : new LiveError("GPT-Live control channel failed to connect")
+    return attempt(0)
   }
 
-  private open(url: string, headers: Record<string, string>) {
+  private open(url: string, handshake: Record<string, string>) {
     return new Promise<void>((resolve, reject) => {
       // Bun's WebSocket accepts custom handshake headers.
-      const socket = new WebSocket(url, { headers } as unknown as string[])
+      const socket = new WebSocket(url, { headers: handshake } as unknown as string[])
       const timeout = setTimeout(() => {
         socket.close()
         reject(new LiveError("GPT-Live control channel timed out"))

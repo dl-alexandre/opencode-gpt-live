@@ -2,7 +2,9 @@
  * OpenCode maps `@opentui/core` to its own runtime copy only for imports in the plugin's
  * entry file. The entry passes the module in, so every renderable belongs to the host.
  */
-export type Core = typeof import("@opentui/core")
+import type * as OpenTUI from "@opentui/core"
+
+export type Core = typeof OpenTUI
 
 let module: Core | undefined
 

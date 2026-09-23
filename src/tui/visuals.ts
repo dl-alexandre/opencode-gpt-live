@@ -90,10 +90,3 @@ export function animating(arrivals: readonly number[], now: number) {
   const last = arrivals[arrivals.length - 1]
   return last !== undefined && now - last < FLAP_SETTLE_MS + FLAP_GLOW_MS
 }
-
-const BRAILLE_BITS = [
-  [0x01, 0x08],
-  [0x02, 0x10],
-  [0x04, 0x20],
-  [0x40, 0x80],
-] as const

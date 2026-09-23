@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+
 import { AuraCanvas, type AuraInput } from "../src/tui/aura"
 
 const palette = {

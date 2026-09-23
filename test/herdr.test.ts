@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import { createServer } from "node:net"
 import { mkdtempSync } from "node:fs"
+import { createServer } from "node:net"
 import os from "node:os"
 import path from "node:path"
+
 import { HerdrStream, detectHerdr } from "../src/tui/herdr"
 
 describe("herdr detection", () => {

@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode/plugin"
+
 import type { Auth } from "./live"
 
 type Context = Plugin.Context
@@ -40,11 +41,14 @@ export async function resolveAuth(ctx: Context): Promise<AuthResult> {
   )
   if (oauth.length === 0) return { ok: false, reason: NOT_SIGNED_IN }
   const active = await ctx.integration.connection.active("openai").catch(() => undefined)
-  const ordered = [...oauth].sort(
+  const ordered = oauth.toSorted(
     (a, b) => Number(b.id === (active as { id?: string })?.id) - Number(a.id === (active as { id?: string })?.id),
   )
-  for (const connection of ordered) {
-    const credential = await ctx.integration.connection.resolve(connection as never).catch(() => undefined)
+  // Resolve every connection at once, then take the first usable one in priority order.
+  const credentials = await Promise.all(
+    ordered.map((connection) => ctx.integration.connection.resolve(connection as never).catch(() => undefined)),
+  )
+  for (const credential of credentials) {
     if (!credential || credential.type !== "oauth") continue
     const claim = claims(credential.access)
     const metadata = (credential.metadata ?? {}) as Record<string, unknown>

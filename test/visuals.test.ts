@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+
 import { animating, arrivalsFor, duration, flap, shimmer } from "../src/tui/visuals"
 
 describe("text effects", () => {

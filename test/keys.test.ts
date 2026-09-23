@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+
 import { resolveKey } from "../src/tui/index"
 
 describe("keybind option", () => {

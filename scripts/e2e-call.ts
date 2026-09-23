@@ -1,3 +1,6 @@
+import path from "node:path"
+import { parseArgs } from "node:util"
+
 /**
  * End-to-end check against the real GPT-Live service, without the TUI.
  *
@@ -10,8 +13,7 @@
  */
 import { OpenCode } from "@opencode/client"
 import { Service } from "@opencode/client/service"
-import { parseArgs } from "node:util"
-import path from "node:path"
+
 import { GptLive } from "../src/shared/rpc"
 import { HelperProcess, findHelper } from "../src/tui/helper"
 
@@ -90,7 +92,14 @@ console.log("call", call.callID, call.model, call.voice, "voice session", call.v
 await helper.answer(call.sdp)
 console.log("webrtc connected")
 
+// Like a real window, check in with the server so it does not end the call as abandoned.
+const heartbeat = setInterval(
+  () => void live.alive({ callID: call.callID }, { location }).catch(() => undefined),
+  5_000,
+)
+
 await Bun.sleep(seconds * 1000)
+clearInterval(heartbeat)
 console.log("\nstopping")
 await live.stop({ callID: call.callID }, { location })
 await helper.close()

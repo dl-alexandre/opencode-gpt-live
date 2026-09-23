@@ -3,6 +3,9 @@ import { chmod, mkdir, rename, rm } from "node:fs/promises"
 import { createRequire } from "node:module"
 import os from "node:os"
 import path from "node:path"
+
+import type { FileSink } from "bun"
+
 import pkg from "../../package.json" with { type: "json" }
 
 export type HelperEvent = { type: string } & Record<string, unknown>
@@ -117,12 +120,15 @@ export class HelperProcess {
     this.ready = this.expect("ready")
     void this.readStdout()
     void this.readStderr()
-    void this.process.exited.then((code) => {
-      this.exited = true
-      const error = new Error(this.stderr.trim().split("\n").pop() || `audio helper exited (${code})`)
-      for (const pending of this.pending.splice(0)) pending.reject(error)
-      this.callbacks.onExit?.(code, this.stderr)
-    })
+    void this.watchExit()
+  }
+
+  private async watchExit() {
+    const code = await this.process.exited
+    this.exited = true
+    const error = new Error(this.stderr.trim().split("\n").pop() || `audio helper exited (${code})`)
+    for (const pending of this.pending.splice(0)) pending.reject(error)
+    this.callbacks.onExit?.(code, this.stderr)
   }
 
   private expect(type: string) {
@@ -183,7 +189,7 @@ export class HelperProcess {
 
   private send(command: Record<string, unknown>) {
     if (this.exited) throw new Error("audio helper is not running")
-    const stdin = this.process.stdin as import("bun").FileSink
+    const stdin = this.process.stdin as FileSink
     stdin.write(`${JSON.stringify(command)}\n`)
     stdin.flush()
   }

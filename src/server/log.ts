@@ -23,11 +23,12 @@ export class CallLog {
 
   write(entry: Record<string, unknown>) {
     const line = `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`
-    this.queue = this.queue
-      .then(async () => {
-        await mkdir(path.dirname(this.file), { recursive: true })
-        await appendFile(this.file, line)
-      })
-      .catch(() => undefined)
+    // Writes are chained so lines stay in order; a failed write never breaks the call.
+    this.queue = this.queue.then(() => this.append(line)).catch(() => undefined)
+  }
+
+  private async append(line: string) {
+    await mkdir(path.dirname(this.file), { recursive: true })
+    await appendFile(this.file, line)
   }
 }

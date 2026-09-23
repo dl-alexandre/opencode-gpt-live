@@ -1,4 +1,5 @@
 import type { Plugin as PluginNamespace } from "@opencode/plugin/tui"
+
 import { VOICES, type Voice } from "../shared/rpc"
 import { VoiceController } from "./controller"
 import { Frames, footerBadge, transcriptPanel, useCore, voiceAura, voiceStrip, type Core, type View } from "./ui"
@@ -21,6 +22,18 @@ const DEFAULT_KEYS: Record<KeyAction, KeyOption> = {
   stop: false,
   new: false,
   voice: false,
+}
+
+/** Resolves once `ready()` returns true, or after `timeout` milliseconds, whichever comes first. */
+function waitFor(ready: () => unknown, timeout: number, interval = 25) {
+  return new Promise<void>((resolve) => {
+    const started = Date.now()
+    const timer = setInterval(() => {
+      if (!ready() && Date.now() - started < timeout) return
+      clearInterval(timer)
+      resolve()
+    }, interval)
+  })
 }
 
 export function resolveKey(value: unknown, fallback: KeyOption): false | string {
@@ -72,7 +85,7 @@ export function createTuiPlugin(module: Core): PluginNamespace.Definition {
             const editor = context.renderer.currentFocusedEditor
             return currentSession() === created.id && editor && editor !== previous && !editor.isDestroyed
           }
-          for (let i = 0; i < 80 && !ready(); i++) await Bun.sleep(25)
+          await waitFor(ready, 2_000)
           return created.id
         } catch (error) {
           context.ui.toast.show({

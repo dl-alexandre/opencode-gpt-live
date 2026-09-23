@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import { chunk, contextAppend, parseCallID, parseEvent } from "../src/server/live"
+
 import { claims } from "../src/server/auth"
-import { background, historyFrom, speakable } from "../src/server/instructions"
 import { toolLabel } from "../src/server/bridge"
+import { background, historyFrom, speakable } from "../src/server/context"
+import { chunk, contextAppend, parseCallID, parseEvent } from "../src/server/live"
 
 describe("call id", () => {
   test("reads the rtc id from the Location header", () => {

@@ -2,30 +2,24 @@
   "name": "opencode-gpt-live",
   "version": "0.0.0",
   "description": "Talk to OpenCode out loud: real-time GPT-Live voice calls on your ChatGPT subscription",
+  "keywords": [
+    "chatgpt",
+    "gpt-live",
+    "opencode",
+    "opencode-plugin",
+    "realtime",
+    "speech",
+    "voice",
+    "voice-assistant",
+    "webrtc"
+  ],
+  "homepage": "https://github.com/malhashemi/opencode-gpt-live#readme",
+  "bugs": "https://github.com/malhashemi/opencode-gpt-live/issues",
   "license": "MIT",
   "author": "Mohammed Alhashemi (https://github.com/malhashemi)",
-  "type": "module",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/malhashemi/opencode-gpt-live.git"
-  },
-  "homepage": "https://github.com/malhashemi/opencode-gpt-live#readme",
-  "bugs": "https://github.com/malhashemi/opencode-gpt-live/issues",
-  "keywords": [
-    "opencode",
-    "opencode-plugin",
-    "voice",
-    "voice-assistant",
-    "gpt-live",
-    "realtime",
-    "webrtc",
-    "chatgpt",
-    "speech"
-  ],
-  "exports": {
-    ".": "./index.ts",
-    "./tui": "./tui.ts",
-    "./rpc": "./src/shared/rpc.ts"
   },
   "files": [
     "index.ts",
@@ -36,12 +30,24 @@
     "NOTICE",
     "CHANGELOG.md"
   ],
+  "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./tui": "./tui.ts",
+    "./rpc": "./src/shared/rpc.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
+    "check": "bun run format:check && bun run lint && bun run typecheck && bun test",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "lint": "oxlint --deny-warnings",
+    "lint:fix": "oxlint --fix",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
-    "check": "bun run format:check && bun run typecheck && bun test",
     "build:native": "cargo build --release --manifest-path native/Cargo.toml",
     "e2e": "bun scripts/e2e-call.ts"
   },
@@ -49,20 +55,17 @@
     "@opencode/plugin": "^2.0.14",
     "zod": "4.1.8"
   },
-  "peerDependencies": {
-    "@opentui/core": ">=0.5.10"
-  },
   "devDependencies": {
     "@opencode/client": "2.0.14",
     "@opencode/theme": "2.0.14",
     "@opentui/core": "0.5.12",
     "@types/bun": "latest",
-    "typescript": "^5.9.0",
-    "prettier": "3.6.2"
+    "oxfmt": "0.70.0",
+    "oxlint": "1.85.0",
+    "typescript": "^5.9.0"
   },
-  "publishConfig": {
-    "access": "public",
-    "provenance": true
+  "peerDependencies": {
+    "@opentui/core": ">=0.5.10"
   },
   "engines": {
     "opencode": ">=2.0.14"

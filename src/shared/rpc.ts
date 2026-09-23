@@ -43,6 +43,8 @@ export const GptLive = define({
         call: z.number(),
         /** The last lines of the previous call, for context in the UI. */
         previous: z.array(z.object({ role: Role, text: z.string() })),
+        /** Things to tell the user, e.g. a custom prompt that could not be read. */
+        notices: z.array(z.string()).optional(),
       }),
       errors: {
         not_signed_in: z.object({ reason: z.string() }),

@@ -1,3 +1,4 @@
+import type { Plugin } from "@opencode/plugin/tui"
 /**
  * Pixel surfaces: somewhere to show an RGBA animation inside the terminal UI.
  * - kitty: an image renderable (Ghostty, kitty, WezTerm and other kitty-graphics terminals)
@@ -7,7 +8,7 @@
  * The choice is automatic; GPT_LIVE_VISUAL or the `visual` option can force one.
  */
 import type { RGBA, Renderable, TextRenderable } from "@opentui/core"
-import type { Plugin } from "@opencode/plugin/tui"
+
 import { core } from "./core"
 import { HerdrStream, detectHerdr, type HerdrPane } from "./herdr"
 
@@ -180,7 +181,7 @@ function herdrSurface(renderer: Renderer, rows: number, pane: HerdrPane, layer: 
 function blockSurface(renderer: Renderer, rows: number): Surface {
   const c = core()
   const box = new c.BoxRenderable(renderer, { flexDirection: "column", height: rows, flexShrink: 0 })
-  let lines: TextRenderable[] = []
+  const lines: TextRenderable[] = []
   const ensure = (count: number) => {
     while (lines.length < count) {
       const line = new c.TextRenderable(renderer, { content: "", wrapMode: "none", height: 1, flexShrink: 0 })
