@@ -54,7 +54,8 @@
           "section": "CI",
           "hidden": true
         }
-      ]
+      ],
+      "initial-version": "0.1.0"
     }
   }
 }
