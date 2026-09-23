@@ -1,0 +1,56 @@
+name: Bug report
+description: Something doesn't work as described
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting! The call log usually shows exactly what went wrong, so please attach it if you can.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run /voice
+        2. Say "..."
+        3. ...
+  - type: input
+    id: version
+    attributes:
+      label: Plugin version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: opencode
+    attributes:
+      label: OpenCode version
+      description: Output of `opencode --version`
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [macOS (Apple Silicon), macOS (Intel), Linux (x64), Linux (arm64), Windows (x64), Other]
+    validations:
+      required: true
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal
+      placeholder: Ghostty 1.2, kitty, tmux inside iTerm2, Windows Terminal...
+  - type: textarea
+    id: log
+    attributes:
+      label: Call log
+      description: |
+        From `~/.local/state/opencode-gpt-live/calls/` (`%LOCALAPPDATA%\opencode-gpt-live\calls` on Windows).
+        It contains the call's transcript, so remove anything private first.
+      render: jsonl
