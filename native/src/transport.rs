@@ -76,7 +76,8 @@ impl PeerConnectionEventHandler for Events {
             RTCPeerConnectionState::Closed => "closed",
             _ => "unknown",
         };
-        self.emitter.emit(serde_json::json!({ "type": "peer", "state": name }));
+        self.emitter
+            .emit(serde_json::json!({ "type": "peer", "state": name }));
     }
 
     async fn on_data_channel(&self, channel: Arc<dyn DataChannel>) {
@@ -191,11 +192,11 @@ impl Transport {
                         ready_tx.send_replace(true);
                     }
                     DataChannelEvent::OnMessage(message) => {
-                        if message.is_string {
-                            if let Ok(text) = String::from_utf8(message.data.to_vec()) {
-                                observer_emitter
-                                    .emit(serde_json::json!({ "type": "event", "data": text }));
-                            }
+                        if message.is_string
+                            && let Ok(text) = String::from_utf8(message.data.to_vec())
+                        {
+                            observer_emitter
+                                .emit(serde_json::json!({ "type": "event", "data": text }));
                         }
                     }
                     DataChannelEvent::OnError

@@ -1,10 +1,10 @@
 {
   "name": "opencode-gpt-live",
-  "version": "0.1.0",
-  "description": "Talk to OpenCode with GPT-Live-1 voice using your ChatGPT subscription",
-  "license": "Apache-2.0",
+  "version": "0.0.0",
+  "description": "Talk to OpenCode out loud: real-time GPT-Live voice calls on your ChatGPT subscription",
+  "license": "MIT",
+  "author": "Mohammed Alhashemi (https://github.com/malhashemi)",
   "type": "module",
-  "author": "Mohammed Alhashemi",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/malhashemi/opencode-gpt-live.git"
@@ -15,10 +15,12 @@
     "opencode",
     "opencode-plugin",
     "voice",
+    "voice-assistant",
     "gpt-live",
     "realtime",
     "webrtc",
-    "chatgpt"
+    "chatgpt",
+    "speech"
   ],
   "exports": {
     ".": "./index.ts",
@@ -31,32 +33,36 @@
     "src",
     "README.md",
     "LICENSE",
-    "NOTICE"
+    "NOTICE",
+    "CHANGELOG.md"
   ],
   "scripts": {
-    "build:native": "cargo build --release --manifest-path native/Cargo.toml",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "check": "bun run typecheck && bun test",
-    "prepublishOnly": "bun run check"
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "bun run format:check && bun run typecheck && bun test",
+    "build:native": "cargo build --release --manifest-path native/Cargo.toml",
+    "e2e": "bun scripts/e2e-call.ts"
   },
   "dependencies": {
     "@opencode/plugin": "^2.0.14",
     "zod": "4.1.8"
   },
   "peerDependencies": {
-    "@opentui/core": ">=0.5.10",
-    "@opentui/solid": ">=0.5.10",
-    "solid-js": ">=1.9.0"
+    "@opentui/core": ">=0.5.10"
   },
   "devDependencies": {
     "@opencode/client": "2.0.14",
     "@opencode/theme": "2.0.14",
     "@opentui/core": "0.5.12",
-    "@opentui/solid": "0.5.12",
     "@types/bun": "latest",
-    "solid-js": "1.9.12",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "prettier": "3.6.2"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "engines": {
     "opencode": ">=2.0.14"

@@ -1,12 +1,10 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { GptLive, type TaskStatus, type Voice } from "../shared/rpc"
 import { HelperProcess, ensureHelper, type HelperEvent } from "./helper"
-import { arrivalsFor, type Phase, pushHistory } from "./visuals"
+import { arrivalsFor, type Phase } from "./visuals"
 
 type Context = Plugin.Context
 type Location = { directory: string; workspaceID?: string }
-
-export const HISTORY = 128
 
 export type Entry =
   | {
@@ -35,8 +33,6 @@ export interface VoiceState {
   muted: boolean
   startedAt: number
   liveAt: number
-  mic: number[]
-  speaker: number[]
   micLevel: number
   speakerLevel: number
   voiceActivity?: string
@@ -54,8 +50,6 @@ const initial = (): VoiceState => ({
   muted: false,
   startedAt: 0,
   liveAt: 0,
-  mic: [],
-  speaker: [],
   micLevel: 0,
   speakerLevel: 0,
   queued: 0,
@@ -195,15 +189,17 @@ export class VoiceController {
         { sessionID, sdp: offer, voice: voice ?? this.options.voice, fresh },
         { location },
       )
-      const past = call.previous.map((turn): Entry => ({
-        id: nextID(),
-        kind: turn.role,
-        text: turn.text,
-        arrivals: [],
-        final: true,
-        at: 0,
-        past: true,
-      }))
+      const past = call.previous.map(
+        (turn): Entry => ({
+          id: nextID(),
+          kind: turn.role,
+          text: turn.text,
+          arrivals: [],
+          final: true,
+          at: 0,
+          past: true,
+        }),
+      )
       this.set({
         callID: call.callID,
         voiceSessionID: call.voiceSessionID,
@@ -312,8 +308,6 @@ export class VoiceController {
         const mic = Number(event.mic) || 0
         const speaker = Number(event.speaker) || 0
         // Levels arrive 20 times a second; the UI animates on its own clock, so skip listeners.
-        this.state.mic = pushHistory(this.state.mic, mic, HISTORY)
-        this.state.speaker = pushHistory(this.state.speaker, speaker, HISTORY)
         this.state.micLevel = mic
         this.state.speakerLevel = speaker
         return

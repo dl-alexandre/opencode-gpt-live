@@ -87,9 +87,11 @@ impl AudioIo {
                 let (info_tx, info_rx) = mpsc::channel();
                 let stop = stop.clone();
                 let emitter = emitter.clone();
-                threads.push(std::thread::Builder::new().name("audio-input".into()).spawn(
-                    move || run_device_input(stop, info_tx, emitter),
-                )?);
+                threads.push(
+                    std::thread::Builder::new()
+                        .name("audio-input".into())
+                        .spawn(move || run_device_input(stop, info_tx, emitter))?,
+                );
                 let (info, prod_cons) = info_rx
                     .recv_timeout(Duration::from_secs(10))
                     .map_err(|_| anyhow::anyhow!("microphone did not start"))??;
@@ -125,9 +127,11 @@ impl AudioIo {
                 let stop = stop.clone();
                 let control = control.clone();
                 let emitter = emitter.clone();
-                threads.push(std::thread::Builder::new().name("audio-output".into()).spawn(
-                    move || run_device_output(stop, control, info_tx, emitter),
-                )?);
+                threads.push(
+                    std::thread::Builder::new()
+                        .name("audio-output".into())
+                        .spawn(move || run_device_output(stop, control, info_tx, emitter))?,
+                );
                 info_rx
                     .recv_timeout(Duration::from_secs(10))
                     .map_err(|_| anyhow::anyhow!("speaker did not start"))??
@@ -141,17 +145,28 @@ impl AudioIo {
                     _ => None,
                 };
                 let info = EndpointInfo {
-                    name: path.clone().map_or_else(|| "none".into(), |path| format!("file:{path}")),
+                    name: path
+                        .clone()
+                        .map_or_else(|| "none".into(), |path| format!("file:{path}")),
                     rate,
                     channels: 1,
                 };
                 let stop = stop.clone();
                 let control = control.clone();
-                threads.push(std::thread::Builder::new().name("audio-file-output".into()).spawn(
-                    move || {
-                        run_virtual_output(path, rate, playback_cons, reference_prod, control, stop)
-                    },
-                )?);
+                threads.push(
+                    std::thread::Builder::new()
+                        .name("audio-file-output".into())
+                        .spawn(move || {
+                            run_virtual_output(
+                                path,
+                                rate,
+                                playback_cons,
+                                reference_prod,
+                                control,
+                                stop,
+                            )
+                        })?,
+                );
                 (info, playback_prod, reference_cons)
             }
         };
@@ -353,36 +368,49 @@ fn run_device_output(
     ready: mpsc::Sender<OutputReady>,
     emitter: Emitter,
 ) {
-    let result = (|| -> anyhow::Result<(cpal::Stream, EndpointInfo, HeapProd<f32>, HeapCons<f32>)> {
-        let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or_else(|| anyhow::anyhow!("no speaker found"))?;
-        let supported = device.default_output_config()?;
-        let config = supported.config();
-        let channels = config.channels as usize;
-        let rate = config.sample_rate;
-        let (playback_prod, playback_cons) = HeapRb::<f32>::new(rate as usize * 4).split();
-        let (reference_prod, reference_cons) = HeapRb::<f32>::new(rate as usize).split();
-        let renderer = Renderer::new(playback_cons, reference_prod, control, rate);
-        let errors = stream_error(emitter.clone(), "speaker");
-        let stream = match supported.sample_format() {
-            cpal::SampleFormat::F32 => build_output::<f32>(&device, config, channels, renderer, errors),
-            cpal::SampleFormat::I16 => build_output::<i16>(&device, config, channels, renderer, errors),
-            cpal::SampleFormat::I32 => build_output::<i32>(&device, config, channels, renderer, errors),
-            cpal::SampleFormat::U16 => build_output::<u16>(&device, config, channels, renderer, errors),
-            cpal::SampleFormat::U8 => build_output::<u8>(&device, config, channels, renderer, errors),
-            cpal::SampleFormat::F64 => build_output::<f64>(&device, config, channels, renderer, errors),
-            other => anyhow::bail!("unsupported speaker sample format {other}"),
-        }?;
-        stream.play()?;
-        let info = EndpointInfo {
-            name: device_name(&device),
-            rate,
-            channels: channels as u16,
-        };
-        Ok((stream, info, playback_prod, reference_cons))
-    })();
+    let result =
+        (|| -> anyhow::Result<(cpal::Stream, EndpointInfo, HeapProd<f32>, HeapCons<f32>)> {
+            let host = cpal::default_host();
+            let device = host
+                .default_output_device()
+                .ok_or_else(|| anyhow::anyhow!("no speaker found"))?;
+            let supported = device.default_output_config()?;
+            let config = supported.config();
+            let channels = config.channels as usize;
+            let rate = config.sample_rate;
+            let (playback_prod, playback_cons) = HeapRb::<f32>::new(rate as usize * 4).split();
+            let (reference_prod, reference_cons) = HeapRb::<f32>::new(rate as usize).split();
+            let renderer = Renderer::new(playback_cons, reference_prod, control, rate);
+            let errors = stream_error(emitter.clone(), "speaker");
+            let stream = match supported.sample_format() {
+                cpal::SampleFormat::F32 => {
+                    build_output::<f32>(&device, config, channels, renderer, errors)
+                }
+                cpal::SampleFormat::I16 => {
+                    build_output::<i16>(&device, config, channels, renderer, errors)
+                }
+                cpal::SampleFormat::I32 => {
+                    build_output::<i32>(&device, config, channels, renderer, errors)
+                }
+                cpal::SampleFormat::U16 => {
+                    build_output::<u16>(&device, config, channels, renderer, errors)
+                }
+                cpal::SampleFormat::U8 => {
+                    build_output::<u8>(&device, config, channels, renderer, errors)
+                }
+                cpal::SampleFormat::F64 => {
+                    build_output::<f64>(&device, config, channels, renderer, errors)
+                }
+                other => anyhow::bail!("unsupported speaker sample format {other}"),
+            }?;
+            stream.play()?;
+            let info = EndpointInfo {
+                name: device_name(&device),
+                rate,
+                channels: channels as u16,
+            };
+            Ok((stream, info, playback_prod, reference_cons))
+        })();
     match result {
         Ok((stream, info, playback, reference)) => {
             let _ = ready.send(Ok((info, playback, reference)));

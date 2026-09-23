@@ -144,17 +144,14 @@ impl Session {
                 if duck_others && self.ducking.is_none() {
                     self.ducking = duck::Ducking::start();
                 }
-                let input = match &input {
-                    InputSpec::File { .. } => InputKind::File(input.file().unwrap_or_default().into()),
-                    _ => InputKind::Device,
+                let input = match input {
+                    InputSpec::File { file } => InputKind::File(file),
+                    InputSpec::Device => InputKind::Device,
                 };
-                let output = if output.is_none() {
-                    OutputKind::None
-                } else if let Some(file) = output.file() {
-                    OutputKind::File(file.into())
-                } else {
-                    let _ = OutputSpec::Device;
-                    OutputKind::Device
+                let output = match output {
+                    OutputSpec::File { file } => OutputKind::File(file),
+                    OutputSpec::Named(name) if name == "none" => OutputKind::None,
+                    OutputSpec::Named(_) | OutputSpec::Device => OutputKind::Device,
                 };
                 // Open devices first so permission prompts and missing hardware fail fast.
                 let io = AudioIo::open(input, output, emitter.clone())?;
@@ -165,11 +162,8 @@ impl Session {
                 }));
                 let (incoming_tx, incoming_rx) = std_mpsc::sync_channel(256);
                 let (outgoing_tx, outgoing_rx) = tokio::sync::mpsc::channel(64);
-                let transport = runtime.block_on(Transport::new(
-                    emitter.clone(),
-                    incoming_tx,
-                    outgoing_rx,
-                ))?;
+                let transport =
+                    runtime.block_on(Transport::new(emitter.clone(), incoming_tx, outgoing_rx))?;
                 let sdp = runtime.block_on(transport.offer())?;
                 self.transport = Some(transport);
                 self.pending = Some(Pending {

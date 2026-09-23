@@ -86,12 +86,4 @@ impl Converter {
     pub fn drain_all(&mut self) -> std::collections::vec_deque::Drain<'_, f32> {
         self.output.drain(..)
     }
-
-    pub fn clear(&mut self) {
-        self.output.clear();
-        if let Some(inner) = &mut self.inner {
-            inner.input.clear();
-            inner.resampler.reset();
-        }
-    }
 }

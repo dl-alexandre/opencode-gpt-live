@@ -2,7 +2,8 @@
 name = "gpt-live-host"
 version = "0.1.0"
 edition = "2024"
-license = "Apache-2.0"
+rust-version = "1.91"
+license = "MIT"
 description = "Native WebRTC and audio helper for the opencode-gpt-live plugin"
 repository = "https://github.com/malhashemi/opencode-gpt-live"
 publish = false

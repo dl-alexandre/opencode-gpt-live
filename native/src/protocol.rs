@@ -33,16 +33,19 @@ pub enum Command {
     Close {},
 }
 
+/// Microphone source: the default input device, or a WAV file (headless testing).
 #[derive(Debug, Default, Deserialize)]
 #[serde(untagged)]
 pub enum InputSpec {
     #[default]
     #[serde(skip)]
     Device,
-    Named(String),
-    File { file: String },
+    File {
+        file: String,
+    },
 }
 
+/// Speaker sink: the default output device, "none" (discard), or a WAV file.
 #[derive(Debug, Default, Deserialize)]
 #[serde(untagged)]
 pub enum OutputSpec {
@@ -50,29 +53,9 @@ pub enum OutputSpec {
     #[serde(skip)]
     Device,
     Named(String),
-    File { file: String },
-}
-
-impl InputSpec {
-    pub fn file(&self) -> Option<&str> {
-        match self {
-            InputSpec::File { file } => Some(file),
-            _ => None,
-        }
-    }
-}
-
-impl OutputSpec {
-    pub fn file(&self) -> Option<&str> {
-        match self {
-            OutputSpec::File { file } => Some(file),
-            _ => None,
-        }
-    }
-
-    pub fn is_none(&self) -> bool {
-        matches!(self, OutputSpec::Named(name) if name == "none")
-    }
+    File {
+        file: String,
+    },
 }
 
 /// Writes one JSON object per line to stdout. Cloneable and thread-safe.

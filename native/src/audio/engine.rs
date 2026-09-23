@@ -255,7 +255,9 @@ impl State {
                 self.pending.extend_from_slice(&processed);
                 if self.pending.len() >= FRAME {
                     let mut data = vec![0u8; 1275];
-                    let len = self.encoder.encode_float(&self.pending[..FRAME], &mut data)?;
+                    let len = self
+                        .encoder
+                        .encode_float(&self.pending[..FRAME], &mut data)?;
                     data.truncate(len);
                     self.pending.drain(..FRAME);
                     let _ = outgoing.try_send(OutgoingFrame { data });
@@ -310,7 +312,10 @@ impl State {
             }
         }
         self.expected_sequence = Some(packet.sequence.wrapping_add(1));
-        match self.decoder.decode_float(&packet.payload, &mut decoded, false) {
+        match self
+            .decoder
+            .decode_float(&packet.payload, &mut decoded, false)
+        {
             Ok(len) => self.play(&decoded[..len]),
             Err(_) => Ok(()),
         }

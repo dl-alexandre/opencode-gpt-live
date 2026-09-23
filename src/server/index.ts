@@ -239,7 +239,8 @@ export default Plugin.define({
         let voiceTitle = link
           ? (
               (await ctx.session.get({ sessionID: link.voiceSessionID as never }).catch(() => undefined)) as
-                { title?: string } | undefined
+                | { title?: string }
+                | undefined
             )?.title
           : undefined
         if (!link || voiceTitle === undefined) {

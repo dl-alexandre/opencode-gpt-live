@@ -4,22 +4,12 @@
  */
 
 export const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const
-export const ORBIT = ["◜", "◠", "◝", "◞", "◡", "◟"] as const
 
 export type Phase = "idle" | "connecting" | "live" | "closing" | "error"
 
 export function clamp(value: number, min = 0, max = 1) {
   return Math.min(max, Math.max(min, value))
 }
-
-/** Keeps a fixed-size rolling history, newest last. */
-export function pushHistory(history: number[], value: number, size: number) {
-  const next = history.length >= size ? history.slice(history.length - size + 1) : history.slice()
-  next.push(value)
-  return next
-}
-
-const BURST_MS = 900
 
 /** Shimmer: a soft highlight that sweeps across text. Returns 0..1 per character. */
 export function shimmer(length: number, time: number, speed = 28, spread = 4) {

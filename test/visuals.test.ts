@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { animating, arrivalsFor, duration, flap, pushHistory, shimmer } from "../src/tui/visuals"
+import { animating, arrivalsFor, duration, flap, shimmer } from "../src/tui/visuals"
 
 describe("text effects", () => {
   test("shimmer highlight moves over time", () => {
@@ -26,11 +26,6 @@ describe("text effects", () => {
 })
 
 describe("helpers", () => {
-  test("history is bounded", () => {
-    let history: number[] = []
-    for (let i = 0; i < 10; i++) history = pushHistory(history, i, 4)
-    expect(history).toEqual([6, 7, 8, 9])
-  })
   test("duration formatting", () => {
     expect(duration(65_000)).toBe("1:05")
     expect(duration(3_725_000)).toBe("1:02:05")

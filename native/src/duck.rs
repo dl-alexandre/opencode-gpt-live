@@ -104,7 +104,14 @@ mod imp {
 
     #[repr(C)]
     struct RenderCallback {
-        proc_: extern "C" fn(*mut c_void, *mut u32, *const c_void, u32, u32, *mut AudioBufferList) -> i32,
+        proc_: extern "C" fn(
+            *mut c_void,
+            *mut u32,
+            *const c_void,
+            u32,
+            u32,
+            *mut AudioBufferList,
+        ) -> i32,
         ref_con: *mut c_void,
     }
 
@@ -112,10 +119,20 @@ mod imp {
 
     #[link(name = "AudioToolbox", kind = "framework")]
     unsafe extern "C" {
-        fn AudioComponentFindNext(component: *mut c_void, description: *const AudioComponentDescription) -> *mut c_void;
+        fn AudioComponentFindNext(
+            component: *mut c_void,
+            description: *const AudioComponentDescription,
+        ) -> *mut c_void;
         fn AudioComponentInstanceNew(component: *mut c_void, unit: *mut AudioUnit) -> i32;
         fn AudioComponentInstanceDispose(unit: AudioUnit) -> i32;
-        fn AudioUnitSetProperty(unit: AudioUnit, id: u32, scope: u32, element: u32, data: *const c_void, size: u32) -> i32;
+        fn AudioUnitSetProperty(
+            unit: AudioUnit,
+            id: u32,
+            scope: u32,
+            element: u32,
+            data: *const c_void,
+            size: u32,
+        ) -> i32;
         fn AudioUnitInitialize(unit: AudioUnit) -> i32;
         fn AudioUnitUninitialize(unit: AudioUnit) -> i32;
         fn AudioOutputUnitStart(unit: AudioUnit) -> i32;
@@ -147,7 +164,8 @@ mod imp {
         unsafe {
             if !data.is_null() {
                 let list = &mut *data;
-                let buffers = std::slice::from_raw_parts_mut(list.buffers.as_mut_ptr(), list.count as usize);
+                let buffers =
+                    std::slice::from_raw_parts_mut(list.buffers.as_mut_ptr(), list.count as usize);
                 for buffer in buffers {
                     if !buffer.data.is_null() {
                         std::ptr::write_bytes(buffer.data as *mut u8, 0, buffer.size as usize);
@@ -180,11 +198,21 @@ mod imp {
         unsafe {
             let component = AudioComponentFindNext(std::ptr::null_mut(), &description);
             anyhow::ensure!(!component.is_null(), "voice processing unit not available");
-            check(AudioComponentInstanceNew(component, &mut unit), "creating voice processing unit")?;
+            check(
+                AudioComponentInstanceNew(component, &mut unit),
+                "creating voice processing unit",
+            )?;
             let result = (|| -> anyhow::Result<()> {
                 let one: u32 = 1;
                 check(
-                    AudioUnitSetProperty(unit, ENABLE_IO, SCOPE_INPUT, 1, &one as *const u32 as *const c_void, 4),
+                    AudioUnitSetProperty(
+                        unit,
+                        ENABLE_IO,
+                        SCOPE_INPUT,
+                        1,
+                        &one as *const u32 as *const c_void,
+                        4,
+                    ),
                     "enabling input",
                 )?;
                 let callback = RenderCallback {
@@ -215,7 +243,10 @@ mod imp {
                     &configuration as *const DuckingConfiguration as *const c_void,
                     std::mem::size_of::<DuckingConfiguration>() as u32,
                 );
-                check(AudioUnitInitialize(unit), "initializing voice processing unit")?;
+                check(
+                    AudioUnitInitialize(unit),
+                    "initializing voice processing unit",
+                )?;
                 check(AudioOutputUnitStart(unit), "starting voice processing unit")?;
                 while !stop.load(Ordering::Acquire) {
                     std::thread::sleep(Duration::from_millis(50));
@@ -262,7 +293,8 @@ mod imp {
 
     /// Every other app's session on the default speaker, keyed by session instance ID.
     unsafe fn sessions() -> windows::core::Result<Vec<(String, ISimpleAudioVolume)>> {
-        let enumerator: IMMDeviceEnumerator = unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
+        let enumerator: IMMDeviceEnumerator =
+            unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
         let device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole)? };
         let manager: IAudioSessionManager2 = unsafe { device.Activate(CLSCTX_ALL, None)? };
         let list = unsafe { manager.GetSessionEnumerator()? };
@@ -270,11 +302,15 @@ mod imp {
         let mut found = Vec::new();
         for index in 0..unsafe { list.GetCount()? } {
             let control = unsafe { list.GetSession(index)? };
-            let Ok(control) = control.cast::<IAudioSessionControl2>() else { continue };
+            let Ok(control) = control.cast::<IAudioSessionControl2>() else {
+                continue;
+            };
             if unsafe { control.GetProcessId() }.unwrap_or(0) == own {
                 continue;
             }
-            let Ok(raw) = (unsafe { control.GetSessionInstanceIdentifier() }) else { continue };
+            let Ok(raw) = (unsafe { control.GetSessionInstanceIdentifier() }) else {
+                continue;
+            };
             let id = unsafe { raw.to_string() }.unwrap_or_default();
             unsafe { CoTaskMemFree(Some(raw.0 as *const _)) };
             if let Ok(volume) = control.cast::<ISimpleAudioVolume>() {
@@ -295,10 +331,19 @@ mod imp {
                         if lowered.contains_key(&id) {
                             continue;
                         }
-                        let Ok(original) = volume.GetMasterVolume() else { continue };
+                        let Ok(original) = volume.GetMasterVolume() else {
+                            continue;
+                        };
                         let set = original * DUCKED;
                         if volume.SetMasterVolume(set, std::ptr::null()).is_ok() {
-                            lowered.insert(id, Lowered { volume, original, set });
+                            lowered.insert(
+                                id,
+                                Lowered {
+                                    volume,
+                                    original,
+                                    set,
+                                },
+                            );
                         }
                     }
                 }
@@ -306,8 +351,14 @@ mod imp {
             }
             for session in lowered.into_values() {
                 // Leave sessions the user adjusted during the call alone.
-                if session.volume.GetMasterVolume().is_ok_and(|now| (now - session.set).abs() < 0.01) {
-                    let _ = session.volume.SetMasterVolume(session.original, std::ptr::null());
+                if session
+                    .volume
+                    .GetMasterVolume()
+                    .is_ok_and(|now| (now - session.set).abs() < 0.01)
+                {
+                    let _ = session
+                        .volume
+                        .SetMasterVolume(session.original, std::ptr::null());
                 }
             }
         }
@@ -333,7 +384,9 @@ mod imp {
 
     /// Other processes' playback streams as (index, volume in PulseAudio units).
     fn streams() -> anyhow::Result<Vec<(u64, u64)>> {
-        let output = Command::new("pactl").args(["-f", "json", "list", "sink-inputs"]).output()?;
+        let output = Command::new("pactl")
+            .args(["-f", "json", "list", "sink-inputs"])
+            .output()?;
         anyhow::ensure!(output.status.success(), "pactl failed");
         let list: serde_json::Value = serde_json::from_slice(&output.stdout)?;
         let own = std::process::id().to_string();
@@ -342,7 +395,9 @@ mod imp {
             .into_iter()
             .flatten()
             .filter_map(|stream| {
-                let pid = stream.pointer("/properties/application.process.id").and_then(|pid| pid.as_str());
+                let pid = stream
+                    .pointer("/properties/application.process.id")
+                    .and_then(|pid| pid.as_str());
                 if pid == Some(own.as_str()) {
                     return None;
                 }
@@ -361,7 +416,11 @@ mod imp {
 
     fn set_volume(index: u64, volume: u64) -> bool {
         Command::new("pactl")
-            .args(["set-sink-input-volume", &index.to_string(), &volume.to_string()])
+            .args([
+                "set-sink-input-volume",
+                &index.to_string(),
+                &volume.to_string(),
+            ])
             .status()
             .is_ok_and(|status| status.success())
     }
@@ -385,7 +444,10 @@ mod imp {
         let now: HashMap<u64, u64> = streams().unwrap_or_default().into_iter().collect();
         for (index, stream) in lowered {
             // Leave streams the user adjusted during the call alone.
-            if now.get(&index).is_some_and(|volume| volume.abs_diff(stream.set) <= 655) {
+            if now
+                .get(&index)
+                .is_some_and(|volume| volume.abs_diff(stream.set) <= 655)
+            {
                 set_volume(index, stream.original);
             }
         }

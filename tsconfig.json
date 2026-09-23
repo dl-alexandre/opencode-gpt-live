@@ -5,8 +5,6 @@
     "moduleResolution": "Bundler",
     "lib": ["ESNext"],
     "types": ["bun"],
-    "jsx": "preserve",
-    "jsxImportSource": "@opentui/solid",
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
