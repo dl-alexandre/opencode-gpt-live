@@ -41,7 +41,7 @@ jobs:
     environment: npm
     permissions:
       contents: write
-      # npm provenance and trusted publishing.
+      # npm trusted publishing (OIDC, no tokens) and provenance.
       id-token: write
     env:
       TAG: ${{ needs.release-please.outputs.tag }}
@@ -60,6 +60,8 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+          # Never restore caches into a release build.
+          package-manager-cache: false
       # Trusted publishing needs npm 11.5.1 or newer.
       - run: npm install -g npm@latest
 
@@ -77,8 +79,6 @@ jobs:
           gh release upload "$TAG" gpt-live-host-* SHA256SUMS --clobber
 
       - name: Publish platform packages
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64 win32-x64; do
             ext=""
@@ -93,8 +93,6 @@ jobs:
           done
 
       - name: Publish the plugin
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           bun scripts/prepare-publish.ts
           if npm view "opencode-gpt-live@$VERSION" version >/dev/null 2>&1; then

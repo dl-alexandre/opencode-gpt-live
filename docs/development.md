@@ -120,8 +120,9 @@ Releases are automated with [release-please](https://github.com/googleapis/relea
    - `opencode-gpt-live-<platform>-<arch>`: one package per platform, carrying the helper.
    - `opencode-gpt-live`: the plugin, with the platform packages as optional dependencies.
 
-Packages are published with npm provenance from the `npm` environment. Publishing uses npm trusted publishing, or the
-`NPM_TOKEN` secret when it is set.
+Publishing uses [npm trusted publishing](https://docs.npmjs.com/trusted-publishers): each package trusts
+`release.yml` in the `npm` environment of this repository, so no npm token exists anywhere, and every version carries
+a provenance attestation linking it to the workflow run that built it.
 
 ### Supported platforms
 
