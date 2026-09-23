@@ -1,6 +1,7 @@
 import type { Plugin } from "@opencode/plugin"
+
 import type { TaskStatus } from "../shared/rpc"
-import { clip, speakable } from "./instructions"
+import { clip, speakable } from "./context"
 import type { LiveEvent, Sideband } from "./live"
 import type { CallLog } from "./log"
 
@@ -313,7 +314,7 @@ export class Bridge {
         return
       }
       case "session.inbox.delivered": {
-        const task = [...this.tasks.values()].find((task) => task.inboxID === data.inboxID)
+        const task = [...this.tasks.values()].find((item) => item.inboxID === data.inboxID)
         if (task && task.status === "queued") this.setStatus(task, "running")
         return
       }

@@ -1,15 +1,22 @@
 import { Plugin } from "@opencode/plugin"
+
 import pkg from "../../package.json" with { type: "json" }
 import { GptLive, VOICES, type Voice } from "../shared/rpc"
 import { resolveAuth } from "./auth"
 import { Bridge } from "./bridge"
-import { background, historyFrom, instructions, voiceAgentPrompt, type HistoryEntry } from "./instructions"
+import { background, historyFrom, type HistoryEntry } from "./context"
 import { LiveError, MODEL, Sideband, createCall, requestIDs } from "./live"
 import { CallLog } from "./log"
+import { loadPrompt } from "./prompt"
 
 interface Options {
   voice?: string
+  /** Appended to GPT-Live's prompt. */
   instructions?: string
+  /** Appended to the voice agent's prompt. */
+  voiceAgentInstructions?: string
+  /** Replace a built-in prompt with a Markdown file or a folder of sections. */
+  prompts?: { gptLive?: string; voiceAgent?: string }
   /** Model for the voice agent's session, as "provider/model". */
   voiceModel?: string
   /** Thinking level for the voice agent's model. */
@@ -57,7 +64,7 @@ function defined<T extends Record<string, unknown>>(value: T): T {
   return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as T
 }
 
-function text(content: string) {
+function toolText(content: string) {
   return { content }
 }
 
@@ -77,7 +84,7 @@ export default Plugin.define({
 
     const bridgeFor = (sessionID: string) =>
       active?.bridge && active.voiceSessionID === sessionID ? active.bridge : undefined
-    const outsideCall = text("This tool only works inside an active GPT-Live voice session.")
+    const outsideCall = toolText("This tool only works inside an active GPT-Live voice session.")
 
     await ctx.tool.transform((editor) => {
       editor.namespace({
@@ -99,9 +106,9 @@ export default Plugin.define({
             const bridge = bridgeFor(context.sessionID)
             if (!bridge) return outsideCall
             try {
-              return text(await definition.run(bridge, (input ?? {}) as Record<string, unknown>))
+              return toolText(await definition.run(bridge, (input ?? {}) as Record<string, unknown>))
             } catch (error) {
-              return text(`Failed: ${error instanceof Error ? error.message : String(error)}`)
+              return toolText(`Failed: ${error instanceof Error ? error.message : String(error)}`)
             }
           },
         })
@@ -231,7 +238,7 @@ export default Plugin.define({
           .context({ sessionID: input.sessionID as never })
           .then((messages) => historyFrom(messages as readonly unknown[]))
           .catch(() => [])
-        const project = ctx.location.project.canonical.split(/[\\/]/).filter(Boolean).pop() ?? "project"
+        const project = ctx.location.project.canonical.split(/[\\/]/).findLast(Boolean) ?? "project"
 
         // One voice session per main session, continued across calls unless a fresh one is requested.
         const linkKey = `link/${input.sessionID}`
@@ -257,7 +264,21 @@ export default Plugin.define({
         const voiceSession = { id: link.voiceSessionID }
         const turnsKey = `turns/${link.voiceSessionID}`
         const previous = (((await ctx.storage.get(turnsKey)) as HistoryEntry[] | undefined) ?? []).slice(-TURNS_KEPT)
-        const prompt = voiceAgentPrompt({ project, directory: ctx.location.directory }) + background(history)
+        // Prompts are read per call, so edits to them apply to the next call.
+        const variables = { project, directory: ctx.location.directory }
+        const agentPrompt = loadPrompt("voice-agent", {
+          override: options.prompts?.voiceAgent,
+          extra: options.voiceAgentInstructions,
+          directory: ctx.location.directory,
+          variables,
+        })
+        const livePrompt = loadPrompt("gpt-live", {
+          override: options.prompts?.gptLive,
+          extra: options.instructions,
+          directory: ctx.location.directory,
+          variables,
+        })
+        const prompt = agentPrompt.text + background(history)
 
         const ids = requestIDs()
         let call: { callID: string; sdp: string }
@@ -271,7 +292,7 @@ export default Plugin.define({
             session: {
               model: MODEL,
               instructions:
-                instructions({ project, directory: ctx.location.directory, extra: options.instructions }) +
+                livePrompt.text +
                 background(
                   previous,
                   "Your recent voice conversation with this user from earlier calls",
@@ -315,69 +336,68 @@ export default Plugin.define({
 
         // Join the control channel in the background so the SDP answer returns immediately;
         // the helper's ICE negotiation runs in parallel.
-        void Sideband.connect({
-          callID: call.callID,
-          auth: auth.auth,
-          ids,
-          version: pkg.version,
-          onEvent: (event) => entry.bridge?.handle(event),
-          onClose: (reason) => finish("closed", reason),
-        })
-          .then((sideband) => {
-            if (active !== entry) {
-              sideband.close()
-              return
-            }
-            entry.sideband = sideband
-            const log = options.log === false ? undefined : new CallLog(entry.callID)
-            log?.write({
-              type: "start",
-              callID: entry.callID,
-              sessionID: entry.sessionID,
-              voiceSessionID: entry.voiceSessionID,
-              voice,
-            })
-            let turns = previous.slice()
-            entry.bridge = new Bridge(
-              ctx,
-              entry.sessionID,
-              entry.voiceSessionID,
-              sideband,
-              {
-                turn: (role, text) => {
-                  turns = [...turns, { role, text }].slice(-TURNS_KEPT)
-                  void ctx.storage
-                    .set(
-                      turnsKey,
-                      turns.map((turn) => ({ ...turn })),
-                    )
-                    .catch(() => undefined)
-                },
-                transcript: (role, text, final) =>
-                  void registration.events.emit("transcript", { callID: entry.callID, role, text, final }),
-                task: (taskID, text, status, detail) =>
-                  void registration.events.emit(
-                    "task",
-                    defined({ callID: entry.callID, taskID, text, status, detail }),
-                  ),
-                activity: (scope, busy, label) =>
-                  void registration.events.emit("activity", defined({ callID: entry.callID, scope, busy, label })),
-                closed: (reason) => finish("closed", reason),
-                error: (message) => {
-                  log?.write({ type: "error", message })
-                  emitState("error", message)
-                },
-                end: (reason) => {
-                  log?.write({ type: "end", reason })
-                  finish("closed", reason)
-                },
-              },
-              log,
-              link.calls,
-            )
-            emitState("live")
+        const joinControlChannel = async () => {
+          const sideband = await Sideband.connect({
+            callID: call.callID,
+            auth: auth.auth,
+            ids,
+            version: pkg.version,
+            onEvent: (event) => entry.bridge?.handle(event),
+            onClose: (reason) => finish("closed", reason),
           })
-          .catch((cause) => finish("error", cause instanceof Error ? cause.message : String(cause)))
+          if (active !== entry) {
+            sideband.close()
+            return
+          }
+          entry.sideband = sideband
+          const log = options.log === false ? undefined : new CallLog(entry.callID)
+          log?.write({
+            type: "start",
+            callID: entry.callID,
+            sessionID: entry.sessionID,
+            voiceSessionID: entry.voiceSessionID,
+            voice,
+          })
+          let turns = previous.slice()
+          entry.bridge = new Bridge(
+            ctx,
+            entry.sessionID,
+            entry.voiceSessionID,
+            sideband,
+            {
+              turn: (role, text) => {
+                turns = [...turns, { role, text }].slice(-TURNS_KEPT)
+                void ctx.storage
+                  .set(
+                    turnsKey,
+                    turns.map((turn) => ({ role: turn.role, text: turn.text })),
+                  )
+                  .catch(() => undefined)
+              },
+              transcript: (role, text, final) =>
+                void registration.events.emit("transcript", { callID: entry.callID, role, text, final }),
+              task: (taskID, text, status, detail) =>
+                void registration.events.emit("task", defined({ callID: entry.callID, taskID, text, status, detail })),
+              activity: (scope, busy, label) =>
+                void registration.events.emit("activity", defined({ callID: entry.callID, scope, busy, label })),
+              closed: (reason) => finish("closed", reason),
+              error: (message) => {
+                log?.write({ type: "error", message })
+                emitState("error", message)
+              },
+              end: (reason) => {
+                log?.write({ type: "end", reason })
+                finish("closed", reason)
+              },
+            },
+            log,
+            link.calls,
+          )
+          emitState("live")
+        }
+        void joinControlChannel().catch((cause) =>
+          finish("error", cause instanceof Error ? cause.message : String(cause)),
+        )
 
         return {
           callID: call.callID,
@@ -388,6 +408,7 @@ export default Plugin.define({
           voiceTitle,
           call: link.calls,
           previous: previous.slice(-8),
+          notices: [...livePrompt.notices, ...agentPrompt.notices],
         }
       },
 

@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode/plugin/tui"
+
 import { GptLive, type TaskStatus, type Voice } from "../shared/rpc"
 import { HelperProcess, ensureHelper, type HelperEvent } from "./helper"
 import { arrivalsFor, type Phase } from "./visuals"
@@ -189,17 +190,15 @@ export class VoiceController {
         { sessionID, sdp: offer, voice: voice ?? this.options.voice, fresh },
         { location },
       )
-      const past = call.previous.map(
-        (turn): Entry => ({
-          id: nextID(),
-          kind: turn.role,
-          text: turn.text,
-          arrivals: [],
-          final: true,
-          at: 0,
-          past: true,
-        }),
-      )
+      const past = call.previous.map((turn): Entry => ({
+        id: nextID(),
+        kind: turn.role,
+        text: turn.text,
+        arrivals: [],
+        final: true,
+        at: 0,
+        past: true,
+      }))
       this.set({
         callID: call.callID,
         voiceSessionID: call.voiceSessionID,
@@ -209,6 +208,7 @@ export class VoiceController {
         call: call.call,
         entries: [...past, ...this.state.entries],
       })
+      for (const notice of call.notices ?? []) this.notice(notice, "info")
       this.heartbeat(call.callID)
       await helper.answer(call.sdp)
       if (this.state.phase === "connecting") this.markLive()
@@ -219,7 +219,7 @@ export class VoiceController {
     }
   }
 
-  async stop(error?: string) {
+  async stop(failure?: string) {
     if (!this.active) return
     this.set({ phase: "closing" })
     const { callID, location } = this.state
@@ -227,16 +227,16 @@ export class VoiceController {
       await this.rpc()
         .stop({ callID }, { location })
         .catch(() => undefined)
-    await this.teardown(error)
+    await this.teardown(failure)
   }
 
   private tearingDown = false
 
-  private async teardown(error?: string, reason?: string) {
+  private async teardown(failure?: string, reason?: string) {
     if (this.state.phase === "idle" || this.state.phase === "error" || this.tearingDown) return
     this.tearingDown = true
     try {
-      await this.finishTeardown(error, reason)
+      await this.finishTeardown(failure, reason)
     } finally {
       this.tearingDown = false
     }
@@ -247,28 +247,33 @@ export class VoiceController {
   /** Tells the server this window still owns the call, so abandoned calls get cleaned up. */
   private heartbeat(callID: string) {
     clearInterval(this.pulse)
-    this.pulse = setInterval(() => {
-      if (this.state.callID !== callID || !this.active) return clearInterval(this.pulse)
-      void this.rpc()
-        .alive({ callID }, { location: this.state.location })
-        .then((reply) => {
-          if (!reply.active && this.state.callID === callID && this.active) void this.teardown(undefined, "Call closed")
-        })
-        .catch(() => undefined)
-    }, 5_000)
+    this.pulse = setInterval(() => void this.checkAlive(callID), 5_000)
   }
 
-  private async finishTeardown(error?: string, reason?: string) {
+  private async checkAlive(callID: string) {
+    if (this.state.callID !== callID || !this.active) {
+      clearInterval(this.pulse)
+      return
+    }
+    const reply = await this.rpc()
+      .alive({ callID }, { location: this.state.location })
+      .catch(() => undefined)
+    // The server no longer knows this call (e.g. it restarted): close it here too.
+    if (reply && !reply.active && this.state.callID === callID && this.active)
+      await this.teardown(undefined, "Call closed")
+  }
+
+  private async finishTeardown(failure?: string, reason?: string) {
     clearInterval(this.pulse)
     this.pulse = undefined
     const helper = this.helper
     this.helper = undefined
     await helper?.close().catch(() => helper.kill())
     const lasted = this.state.liveAt ? Date.now() - this.state.liveAt : 0
-    this.set({ phase: error ? "error" : "idle", error, voiceActivity: undefined, mainActivity: undefined })
-    if (error) {
-      this.notice(error, "error")
-      this.context.ui.toast.show({ title: "GPT-Live", message: error, variant: "error", duration: 8000 })
+    this.set({ phase: failure ? "error" : "idle", error: failure, voiceActivity: undefined, mainActivity: undefined })
+    if (failure) {
+      this.notice(failure, "error")
+      this.context.ui.toast.show({ title: "GPT-Live", message: failure, variant: "error", duration: 8000 })
       return
     }
     const minutes = Math.max(1, Math.round(lasted / 60_000))
