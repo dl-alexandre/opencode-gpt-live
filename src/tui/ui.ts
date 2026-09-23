@@ -151,13 +151,24 @@ export function voiceStrip(context: Context, voice: VoiceController, sessionID: 
       if (state.call) left.push(chunk(` · call ${state.call}`, p.dim))
       if (state.phase === "live" && state.liveAt) left.push(chunk(`  ${duration(now - state.liveAt)}`, p.text))
       const full: Chunk[] = [
+        chunk(shortcut("gptlive.panel", "/voice-panel"), p.muted),
+        chunk(" transcript   ", p.dim),
         chunk(shortcut("gptlive.mute", "/voice-mute"), p.muted),
         chunk(state.muted ? " unmute" : " mute", p.dim),
         chunk(`   ${shortcut("gptlive.toggle", "/voice")}`, p.muted),
         chunk(' end · or say "end the call"', p.dim),
       ]
       const short: Chunk[] = [chunk(`${shortcut("gptlive.toggle", "/voice")}`, p.muted), chunk(" end", p.dim)]
-      header.content = styled(row(left, width(left) + width(full) + 2 <= total ? full : short, total))
+      // Narrower strips drop the spoken hint first, then everything but the end key.
+      const keys: Chunk[] = [
+        chunk(shortcut("gptlive.panel", "/voice-panel"), p.muted),
+        chunk(" transcript  ", p.dim),
+        chunk(shortcut("gptlive.mute", "/voice-mute"), p.muted),
+        chunk(state.muted ? " unmute  " : " mute  ", p.dim),
+        ...short,
+      ]
+      const hints = [full, keys, short].find((option) => width(left) + width(option) + 2 <= total) ?? short
+      header.content = styled(row(left, hints, total))
 
       // Activity line.
       const you: Chunk[] = [

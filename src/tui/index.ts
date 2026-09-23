@@ -7,13 +7,43 @@ const PANEL = "gptlive.transcript"
 
 type Context = PluginNamespace.Context
 
+/** Actions that can have a keyboard shortcut, set with the `keybinds` plugin option. */
+type KeyAction = "toggle" | "stop" | "new" | "mute" | "panel" | "voice"
+/** A key ("ctrl+s"), alternatives ("f8,ctrl+x v" or ["f8", "ctrl+x v"]), or false / "none" for no key. */
+type KeyOption = string | readonly string[] | false
+
+const DEFAULT_KEYS: Record<KeyAction, KeyOption> = {
+  toggle: "f8",
+  mute: "f9",
+  panel: "ctrl+s",
+  stop: false,
+  new: false,
+  voice: false,
+}
+
+export function resolveKey(value: unknown, fallback: KeyOption): false | string {
+  const chosen = value === undefined ? fallback : value
+  if (chosen === false || chosen === null || chosen === "none" || chosen === "") return false
+  if (Array.isArray(chosen)) {
+    const keys = chosen.filter((item): item is string => typeof item === "string" && item.trim() !== "")
+    return keys.length ? keys.join(",") : false
+  }
+  return typeof chosen === "string" ? chosen : resolveKey(undefined, fallback)
+}
+
 /** Builds the terminal plugin; `core` must be imported by the entry file (see tui.ts). */
 export function createTuiPlugin(module: Core): PluginNamespace.Definition {
   useCore(module)
   return {
     id: "opencode-gpt-live.tui",
     setup(context: Context) {
-      const options = context.options as { voice?: string; panel?: boolean; duck?: boolean }
+      const options = context.options as {
+        voice?: string
+        panel?: boolean
+        duck?: boolean
+        keybinds?: Partial<Record<KeyAction, KeyOption>>
+      }
+      const key = (action: KeyAction) => resolveKey(options.keybinds?.[action], DEFAULT_KEYS[action])
       const voice = new VoiceController(context, {
         voice: VOICES.includes(options.voice as Voice) ? (options.voice as Voice) : undefined,
         // Other apps' audio is turned down during calls and restored afterwards.
@@ -120,7 +150,7 @@ export function createTuiPlugin(module: Core): PluginNamespace.Definition {
                   title: "Voice call: start or end (GPT-Live)",
                   description: "Talk to OpenCode with GPT-Live using your ChatGPT subscription",
                   group: "Voice",
-                  bind: "f8",
+                  bind: key("toggle"),
                   palette: true,
                   suggested: true,
                   slash: { name: "voice" },
@@ -130,7 +160,7 @@ export function createTuiPlugin(module: Core): PluginNamespace.Definition {
                   id: "gptlive.stop",
                   title: "Voice call: end",
                   group: "Voice",
-                  bind: false,
+                  bind: key("stop"),
                   palette: true,
                   slash: { name: "voice-stop", aliases: ["hangup"] },
                   run: () => voice.stop(),
@@ -140,7 +170,7 @@ export function createTuiPlugin(module: Core): PluginNamespace.Definition {
                   title: "Voice call: start with a fresh voice session",
                   description: "Forget earlier calls for this session and start over",
                   group: "Voice",
-                  bind: false,
+                  bind: key("new"),
                   palette: true,
                   slash: { name: "voice-new" },
                   run: () =>
@@ -150,7 +180,7 @@ export function createTuiPlugin(module: Core): PluginNamespace.Definition {
                   id: "gptlive.mute",
                   title: "Voice call: mute or unmute microphone",
                   group: "Voice",
-                  bind: "f9",
+                  bind: key("mute"),
                   palette: true,
                   slash: { name: "voice-mute" },
                   run: () => voice.toggleMute(),
@@ -159,7 +189,7 @@ export function createTuiPlugin(module: Core): PluginNamespace.Definition {
                   id: "gptlive.panel",
                   title: "Voice call: toggle transcript",
                   group: "Voice",
-                  bind: false,
+                  bind: key("panel"),
                   palette: true,
                   slash: { name: "voice-panel" },
                   run: () => togglePanel(),
@@ -168,7 +198,7 @@ export function createTuiPlugin(module: Core): PluginNamespace.Definition {
                   id: "gptlive.voice",
                   title: "Voice call: choose voice",
                   group: "Voice",
-                  bind: false,
+                  bind: key("voice"),
                   palette: true,
                   slash: { name: "voice-pick" },
                   run: () => pickVoice(),
