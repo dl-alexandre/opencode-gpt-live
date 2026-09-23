@@ -22,7 +22,11 @@ use protocol::InputSpec;
 use protocol::OutputSpec;
 use transport::Transport;
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Release builds get the plugin version injected (GPT_LIVE_VERSION); local builds use Cargo's.
+const VERSION: &str = match option_env!("GPT_LIVE_VERSION") {
+    Some(version) if !version.is_empty() => version,
+    _ => env!("CARGO_PKG_VERSION"),
+};
 
 enum Control {
     Command(Command),

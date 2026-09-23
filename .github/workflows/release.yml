@@ -1,0 +1,104 @@
+# Releases are driven by release-please: conventional commits on main keep a release PR up
+# to date (version bump + CHANGELOG). Merging that PR creates the GitHub release, and the
+# jobs below build the audio helper for every platform, attach the binaries and SHA256SUMS
+# to the release, and publish the platform packages and the plugin to npm.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  helper:
+    needs: release-please
+    if: needs.release-please.outputs.created == 'true'
+    uses: ./.github/workflows/build-helper.yml
+    with:
+      version: ${{ needs.release-please.outputs.version }}
+
+  publish:
+    needs: [release-please, helper]
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: write
+      # npm provenance and trusted publishing.
+      id-token: write
+    env:
+      TAG: ${{ needs.release-please.outputs.tag }}
+      VERSION: ${{ needs.release-please.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-please.outputs.tag }}
+
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm 11.5.1 or newer.
+      - run: npm install -g npm@latest
+
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: helper-*
+          path: dist
+          merge-multiple: true
+
+      - name: Attach binaries to the GitHub release
+        run: |
+          cd dist
+          sha256sum gpt-live-host-* > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$TAG" gpt-live-host-* SHA256SUMS --clobber
+
+      - name: Publish platform packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64 win32-x64; do
+            ext=""
+            if [[ "$target" == win32-* ]]; then ext=".exe"; fi
+            name="opencode-gpt-live-$target"
+            bun scripts/package-platform.ts "$target" "dist/gpt-live-host-$target$ext"
+            if npm view "$name@$VERSION" version >/dev/null 2>&1; then
+              echo "$name@$VERSION is already published"
+            else
+              npm publish "npm/$name" --provenance --access public
+            fi
+          done
+
+      - name: Publish the plugin
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          bun scripts/prepare-publish.ts
+          if npm view "opencode-gpt-live@$VERSION" version >/dev/null 2>&1; then
+            echo "opencode-gpt-live@$VERSION is already published"
+          else
+            npm publish --provenance --access public
+          fi

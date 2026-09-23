@@ -1,0 +1,72 @@
+# Builds the gpt-live-host audio helper for every supported platform and uploads each
+# binary as an artifact named helper-<platform>-<arch>. Called by CI and by releases.
+name: Build helper
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version to embed in the binary (empty for development builds)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: darwin-arm64, os: macos-15, rust: aarch64-apple-darwin, smoke: true }
+          - { target: darwin-x64, os: macos-15, rust: x86_64-apple-darwin, smoke: false }
+          - { target: linux-x64, os: ubuntu-22.04, rust: x86_64-unknown-linux-gnu, smoke: true }
+          - { target: linux-arm64, os: ubuntu-22.04-arm, rust: aarch64-unknown-linux-gnu, smoke: true }
+          - { target: win32-x64, os: windows-2022, rust: x86_64-pc-windows-msvc, smoke: true }
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+          key: ${{ matrix.target }}
+
+      - name: Install ALSA headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake
+
+      - name: Build
+        shell: bash
+        env:
+          GPT_LIVE_VERSION: ${{ inputs.version }}
+        run: cargo build --release --locked --manifest-path native/Cargo.toml --target ${{ matrix.rust }}
+
+      - name: Stage
+        shell: bash
+        run: |
+          ext=""
+          if [[ "${{ matrix.target }}" == win32-* ]]; then ext=".exe"; fi
+          mkdir -p dist
+          cp "native/target/${{ matrix.rust }}/release/gpt-live-host$ext" "dist/gpt-live-host-${{ matrix.target }}$ext"
+          ls -la dist
+
+      - name: Smoke test
+        if: matrix.smoke
+        shell: bash
+        run: |
+          ext=""
+          if [[ "${{ matrix.target }}" == win32-* ]]; then ext=".exe"; fi
+          "dist/gpt-live-host-${{ matrix.target }}$ext" --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: helper-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
