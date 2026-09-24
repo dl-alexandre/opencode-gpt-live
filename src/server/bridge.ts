@@ -26,6 +26,37 @@ interface Task {
   status: TaskStatus
 }
 
+export type TaskOutcome = "done" | "failed" | "cancelled" | "lost"
+
+/** Returns the one spoken outcome for every task that has not already finished. */
+export function taskOutcomes(
+  tasks: readonly Task[],
+  outcome: TaskOutcome,
+  error?: string,
+  result?: string,
+  cancelledByUser = false,
+): string[] {
+  const open = tasks.filter((task) => task.status === "queued" || task.status === "running")
+  return open.flatMap((task) => {
+    task.status = outcome === "done" ? "done" : outcome === "cancelled" ? "cancelled" : "failed"
+    if (outcome === "done") {
+      return [
+        result
+          ? `Finished the task "${clip(task.text, 120)}". Outcome: ${result}`
+          : `Finished the task "${clip(task.text, 120)}".`,
+      ]
+    }
+    if (outcome === "failed")
+      return [`The task "${clip(task.text, 120)}" failed: ${clip(error ?? "unknown error", 300)}`]
+    if (outcome === "lost") {
+      return [
+        `Lost track of the task "${clip(task.text, 120)}" when the OpenCode event stream disconnected. Its result is unknown.`,
+      ]
+    }
+    return cancelledByUser ? [] : [`Work on "${clip(task.text, 120)}" was stopped.`]
+  })
+}
+
 const TOOL_LABELS: Record<string, string> = {
   read: "reading files",
   write: "writing a file",
@@ -94,7 +125,7 @@ export class Bridge {
     private readonly log?: CallLog,
     private readonly call = 1,
   ) {
-    void this.watchSessions()
+    this.watchSessions()
   }
 
   handle(event: LiveEvent) {
@@ -149,18 +180,24 @@ export class Bridge {
     const record: Task = { id, text, status: "queued" }
     this.tasks.set(id, record)
     this.events.task(id, text, "queued")
-    const entry = await this.ctx.session.prompt({
-      sessionID: this.mainSessionID as never,
-      text,
-      delivery,
-      metadata: { gptLive: { voiceSessionID: this.voiceSessionID, taskID: id } },
-    })
-    record.inboxID = (entry as { id?: string }).id
+    try {
+      const entry = await this.ctx.session.prompt({
+        sessionID: this.mainSessionID as never,
+        text,
+        delivery,
+        metadata: { gptLive: { voiceSessionID: this.voiceSessionID, taskID: id } },
+      })
+      record.inboxID = (entry as { id?: string }).id
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      this.failUnaccepted(record, reason)
+      return `Failed before the coding session started: ${clip(reason, 300)}. Tell the user it did not run; do not say you are still looking into it.`
+    }
     if (delivery === "steer" && this.mainBusy)
-      return "Delivered to the main session's current work as a steering message. The outcome will be announced when it finishes."
+      return "Delivered to the main session's current work as a steering message. Tell the user briefly, without promising that it has already finished."
     return this.mainBusy
-      ? "Queued in the main session. It is busy with earlier work, so this starts next. The result will be announced when it is done."
-      : "Sent to the main session, which has started on it. The result will be announced when it is done."
+      ? "Queued in the main session. It is busy with earlier work, so this starts next. Tell the user briefly; the outcome will be announced when it finishes."
+      : "Accepted by the coding session. Tell the user briefly that it has started; the outcome will be announced when it finishes."
   }
 
   /** Tool: recent main-session conversation, including which tools were used. */
@@ -248,17 +285,34 @@ export class Bridge {
     this.events.task(task.id, task.text, status, detail)
   }
 
-  private async watchSessions() {
+  private watchSessions() {
+    const signal = this.abort.signal
+    const events = this.ctx.event.subscribe({ signal })
+    void this.consumeEvents(events, signal)
+  }
+
+  private async consumeEvents(
+    events: AsyncIterable<{ type: string; data?: Record<string, unknown> }>,
+    signal: AbortSignal,
+  ) {
     try {
-      for await (const event of this.ctx.event.subscribe({ signal: this.abort.signal })) {
+      for await (const event of events) {
         const data = (event as { data?: Record<string, unknown> }).data
         if (!data) continue
+        if (signal.aborted) return
         if (data.sessionID === this.voiceSessionID) this.onVoiceEvent(event.type, data)
         else if (data.sessionID === this.mainSessionID) this.onMainEvent(event.type, data)
       }
+      if (!signal.aborted) this.lostEvents("The OpenCode event stream ended")
     } catch (error) {
-      if (!this.abort.signal.aborted) this.events.error(`Lost the OpenCode event stream: ${String(error)}`)
+      if (!signal.aborted) this.lostEvents(error instanceof Error ? error.message : String(error))
     }
+  }
+
+  /** Outstanding tasks can no longer receive their terminal event, so say so once. */
+  private lostEvents(reason: string) {
+    this.events.error(`Lost the OpenCode event stream: ${reason}`)
+    for (const message of taskOutcomes([...this.tasks.values()], "lost")) this.announce(message)
   }
 
   private onVoiceEvent(type: string, data: Record<string, unknown>) {
@@ -345,32 +399,31 @@ export class Bridge {
     }
   }
 
+  /** A task rejected before OpenCode delivered it still needs one spoken failure. */
+  private failUnaccepted(task: Task, error: string) {
+    this.setStatus(task, "failed", error)
+    this.announce(`The task "${clip(task.text, 120)}" failed before it started: ${clip(error, 300)}`)
+  }
+
   private finishMain(outcome: "done" | "failed" | "cancelled", error?: string) {
     this.mainBusy = false
     this.mainLabel = undefined
     this.events.activity("main", false)
-    const running = [...this.tasks.values()].filter((task) => task.status === "running")
-    if (running.length === 0) return
-    const result = speakable(this.mainText)
-    for (const task of running) {
-      let spoken: string | undefined
-      if (outcome === "done") {
-        this.setStatus(task, "done")
-        spoken = result
-          ? `Finished the task "${clip(task.text, 120)}". Outcome: ${result}`
-          : `Finished the task "${clip(task.text, 120)}".`
-      } else if (outcome === "failed") {
-        this.setStatus(task, "failed", error)
-        spoken = `The task "${clip(task.text, 120)}" failed: ${clip(error ?? "unknown error", 300)}`
-      } else {
-        this.setStatus(task, "cancelled")
-        if (!this.cancelRequested) spoken = `Work on "${clip(task.text, 120)}" was stopped.`
-      }
-      if (!spoken) continue
-      // Speak it now, and keep the voice agent's memory in sync without starting a turn.
-      this.sideband.append(spoken, "speakable")
-      this.notifyVoice(spoken)
-    }
+    // A rejection can arrive before inbox delivery marks the task running.
+    const spoken = taskOutcomes(
+      [...this.tasks.values()],
+      outcome,
+      error,
+      speakable(this.mainText),
+      this.cancelRequested,
+    )
+    for (const message of spoken) this.announce(message)
+  }
+
+  /** Speak an outcome once and keep it for the voice agent's next hand-off. */
+  private announce(spoken: string) {
+    this.sideband.append(spoken, "speakable")
+    this.notifyVoice(spoken)
   }
 
   /** Queue a coding-session update for the voice agent's next hand-off (no extra turn). */
