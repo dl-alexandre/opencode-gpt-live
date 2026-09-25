@@ -28,32 +28,49 @@ interface Task {
 
 export type TaskOutcome = "done" | "failed" | "cancelled" | "lost"
 
-/** Returns the one spoken outcome for every task that has not already finished. */
+export interface SpokenOutcome {
+  id: string
+  status: TaskStatus
+  detail?: string
+  spoken?: string
+}
+
+/** One outcome per still-open task. Pure: the caller applies the status. Queued tasks are included only when asked. */
 export function taskOutcomes(
   tasks: readonly Task[],
   outcome: TaskOutcome,
-  error?: string,
-  result?: string,
-  cancelledByUser = false,
-): string[] {
-  const open = tasks.filter((task) => task.status === "queued" || task.status === "running")
-  return open.flatMap((task) => {
-    task.status = outcome === "done" ? "done" : outcome === "cancelled" ? "cancelled" : "failed"
+  options: { error?: string; result?: string; cancelledByUser?: boolean; includeQueued?: boolean } = {},
+): SpokenOutcome[] {
+  const open = tasks.filter((task) => task.status === "running" || (options.includeQueued && task.status === "queued"))
+  return open.map((task) => {
+    const status: TaskStatus = outcome === "done" ? "done" : outcome === "cancelled" ? "cancelled" : "failed"
+    const label = clip(task.text, 120)
     if (outcome === "done") {
-      return [
-        result
-          ? `Finished the task "${clip(task.text, 120)}". Outcome: ${result}`
-          : `Finished the task "${clip(task.text, 120)}".`,
-      ]
+      return {
+        id: task.id,
+        status,
+        spoken: options.result
+          ? `Finished the task "${label}". Outcome: ${options.result}`
+          : `Finished the task "${label}".`,
+      }
     }
-    if (outcome === "failed")
-      return [`The task "${clip(task.text, 120)}" failed: ${clip(error ?? "unknown error", 300)}`]
+    if (outcome === "failed") {
+      const detail = clip(options.error ?? "unknown error", 300)
+      return { id: task.id, status, detail, spoken: `The task "${label}" failed: ${detail}` }
+    }
     if (outcome === "lost") {
-      return [
-        `Lost track of the task "${clip(task.text, 120)}" when the OpenCode event stream disconnected. Its result is unknown.`,
-      ]
+      return {
+        id: task.id,
+        status,
+        detail: "event stream lost",
+        spoken: `Lost track of the task "${label}" when the OpenCode event stream disconnected. Its result is unknown.`,
+      }
     }
-    return cancelledByUser ? [] : [`Work on "${clip(task.text, 120)}" was stopped.`]
+    return {
+      id: task.id,
+      status,
+      spoken: options.cancelledByUser ? undefined : `Work on "${label}" was stopped.`,
+    }
   })
 }
 
@@ -115,6 +132,7 @@ export class Bridge {
   /** Coding-session updates the voice agent has not seen yet. */
   private updates: string[] = []
   private introduced = false
+  private streamLost = false
 
   constructor(
     private readonly ctx: Context,
@@ -125,7 +143,7 @@ export class Bridge {
     private readonly log?: CallLog,
     private readonly call = 1,
   ) {
-    this.watchSessions()
+    void this.watchSessions()
   }
 
   handle(event: LiveEvent) {
@@ -175,6 +193,8 @@ export class Bridge {
   async send(raw: string, delivery: "queue" | "steer" = "queue"): Promise<string> {
     const text = raw.trim()
     if (!text) throw new Error("text is empty; write the brief you want to send")
+    if (this.streamLost)
+      throw new Error("The OpenCode event stream is gone, so this call can no longer report a result.")
     this.log?.write({ type: "task", delivery, text })
     const id = `task_${++this.taskCounter}`
     const record: Task = { id, text, status: "queued" }
@@ -191,13 +211,13 @@ export class Bridge {
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
       this.failUnaccepted(record, reason)
-      return `Failed before the coding session started: ${clip(reason, 300)}. Tell the user it did not run; do not say you are still looking into it.`
+      return `Failed before the coding session started: ${clip(reason, 300)}`
     }
     if (delivery === "steer" && this.mainBusy)
-      return "Delivered to the main session's current work as a steering message. Tell the user briefly, without promising that it has already finished."
+      return "Delivered to the main session's current work as a steering message. The outcome will be announced when it finishes."
     return this.mainBusy
-      ? "Queued in the main session. It is busy with earlier work, so this starts next. Tell the user briefly; the outcome will be announced when it finishes."
-      : "Accepted by the coding session. Tell the user briefly that it has started; the outcome will be announced when it finishes."
+      ? "Queued in the main session. It is busy with earlier work, so this starts next. The result will be announced when it is done."
+      : "Sent to the main session, which has started on it. The result will be announced when it is done."
   }
 
   /** Tool: recent main-session conversation, including which tools were used. */
@@ -285,18 +305,10 @@ export class Bridge {
     this.events.task(task.id, task.text, status, detail)
   }
 
-  private watchSessions() {
+  private async watchSessions() {
     const signal = this.abort.signal
-    const events = this.ctx.event.subscribe({ signal })
-    void this.consumeEvents(events, signal)
-  }
-
-  private async consumeEvents(
-    events: AsyncIterable<{ type: string; data?: Record<string, unknown> }>,
-    signal: AbortSignal,
-  ) {
     try {
-      for await (const event of events) {
+      for await (const event of this.ctx.event.subscribe({ signal })) {
         const data = (event as { data?: Record<string, unknown> }).data
         if (!data) continue
         if (signal.aborted) return
@@ -309,10 +321,13 @@ export class Bridge {
     }
   }
 
-  /** Outstanding tasks can no longer receive their terminal event, so say so once. */
+  /** Outstanding tasks can no longer receive their terminal event, so say so once and end the call. */
   private lostEvents(reason: string) {
+    if (this.streamLost || this.closed) return
+    this.streamLost = true
     this.events.error(`Lost the OpenCode event stream: ${reason}`)
-    for (const message of taskOutcomes([...this.tasks.values()], "lost")) this.announce(message)
+    this.applyOutcomes(taskOutcomes([...this.tasks.values()], "lost", { includeQueued: true }))
+    this.events.end(`Lost the OpenCode event stream: ${reason}`)
   }
 
   private onVoiceEvent(type: string, data: Record<string, unknown>) {
@@ -373,6 +388,7 @@ export class Bridge {
         return
       }
       case "session.execution.started":
+        this.promoteQueued()
         this.mainBusy = true
         this.mainText = ""
         this.mainLabel = "thinking"
@@ -401,23 +417,38 @@ export class Bridge {
 
   /** A task rejected before OpenCode delivered it still needs one spoken failure. */
   private failUnaccepted(task: Task, error: string) {
+    if (task.status !== "queued") return
     this.setStatus(task, "failed", error)
     this.announce(`The task "${clip(task.text, 120)}" failed before it started: ${clip(error, 300)}`)
+  }
+
+  /** A run can start before inbox delivery. Promote the next queued task only when nothing is already running. */
+  private promoteQueued() {
+    if ([...this.tasks.values()].some((task) => task.status === "running")) return
+    const next = [...this.tasks.values()].find((task) => task.status === "queued")
+    if (next) this.setStatus(next, "running")
   }
 
   private finishMain(outcome: "done" | "failed" | "cancelled", error?: string) {
     this.mainBusy = false
     this.mainLabel = undefined
     this.events.activity("main", false)
-    // A rejection can arrive before inbox delivery marks the task running.
-    const spoken = taskOutcomes(
-      [...this.tasks.values()],
-      outcome,
-      error,
-      speakable(this.mainText),
-      this.cancelRequested,
+    this.applyOutcomes(
+      taskOutcomes([...this.tasks.values()], outcome, {
+        error,
+        result: speakable(this.mainText),
+        cancelledByUser: this.cancelRequested,
+      }),
     )
-    for (const message of spoken) this.announce(message)
+  }
+
+  private applyOutcomes(outcomes: readonly SpokenOutcome[]) {
+    for (const outcome of outcomes) {
+      const task = this.tasks.get(outcome.id)
+      if (!task || (task.status !== "queued" && task.status !== "running")) continue
+      this.setStatus(task, outcome.status, outcome.detail)
+      if (outcome.spoken) this.announce(outcome.spoken)
+    }
   }
 
   /** Speak an outcome once and keep it for the voice agent's next hand-off. */
