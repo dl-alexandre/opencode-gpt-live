@@ -8,7 +8,7 @@ import { background, historyFrom, type HistoryEntry } from "./context"
 import { LiveError, MODEL, Sideband, createCall, requestIDs } from "./live"
 import { CallLog } from "./log"
 import { loadPrompt } from "./prompt"
-import type { CodingTarget } from "./routing"
+import { stageCatalog, type CodingTarget } from "./routing"
 
 interface Options {
   voice?: string
@@ -470,12 +470,7 @@ export default Plugin.define({
 
       catalog: async (input) => {
         if (!active || active.callID !== input.callID) return { accepted: 0 }
-        const targets = input.targets.slice(0, 50)
-        if (!active.bridge) {
-          active.pendingCatalog = targets
-          return { accepted: targets.length }
-        }
-        return { accepted: active.bridge.replaceCatalog(targets) }
+        return { accepted: stageCatalog(active, input.targets) }
       },
     })
 

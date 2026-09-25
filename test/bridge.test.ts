@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs"
 import path from "node:path"
 
 import { Bridge, type BridgeEvents } from "../src/server/bridge"
-import type { Sideband } from "../src/server/live"
+import type { Sideband, LiveEvent } from "../src/server/live"
+import { stageCatalog, type CodingTarget } from "../src/server/routing"
 
 const prompts = path.join(import.meta.dir, "../src/server/prompts")
 
@@ -198,5 +199,107 @@ describe("delegated task outcomes", () => {
     await expect(bridge.send("Again")).rejects.toThrow("event stream is gone")
     expect(sideband.spoken).toHaveLength(1)
     bridge.close()
+  })
+})
+
+const alpha: CodingTarget = { sessionID: "ses_a", title: "Alpha", directory: "/work/demo", projectID: "demo" }
+const beta: CodingTarget = { sessionID: "ses_b", title: "Beta", directory: "/private/var/work/demo", projectID: "demo" }
+
+function routed() {
+  const interrupted: string[] = []
+  const replies: string[] = []
+  const permissions = new Map<string, Array<{ id: string; action: string; resources: string[] }>>()
+  const sideband = new FakeSideband()
+  const stream = new EventStream()
+  const bridge = new Bridge(
+    {
+      session: {
+        prompt: () => Promise.resolve({ id: "inbox" }),
+        interrupt: async ({ sessionID }: { sessionID: string }) => {
+          interrupted.push(sessionID)
+          return { interrupted: true }
+        },
+      },
+      permission: {
+        list: async ({ sessionID }: { sessionID: string }) => permissions.get(sessionID) ?? [],
+        reply: async ({ sessionID, requestID }: { sessionID: string; requestID: string }) => {
+          replies.push(`${sessionID}:${requestID}`)
+        },
+      },
+      event: { subscribe: () => stream },
+    } as never,
+    alpha.sessionID,
+    "voice",
+    sideband as unknown as Sideband,
+    {
+      task: () => {},
+      activity: () => {},
+      transcript: () => {},
+      closed: () => {},
+      error: () => {},
+      end: () => {},
+    } as unknown as BridgeEvents,
+    undefined,
+    1,
+    alpha,
+  )
+  return { bridge, stream, interrupted, replies, permissions, sideband }
+}
+
+describe("routing through Bridge", () => {
+  test("stop interrupts work the user typed", async () => {
+    const { bridge, stream, interrupted } = routed()
+    stream.emit({ type: "session.execution.started", data: { sessionID: alpha.sessionID } })
+    await Bun.sleep(0)
+    await bridge.cancel()
+    expect(interrupted).toEqual([alpha.sessionID])
+    bridge.close()
+  })
+
+  test("finishing the old session does not make the new target look busy", async () => {
+    const { bridge, stream } = routed()
+    bridge.replaceCatalog([alpha, beta])
+    expect(bridge.selectTarget(beta.sessionID)).toContain("Confirm")
+    bridge.handle({ kind: "transcript", role: "user", text: "yes, switch", final: true } as LiveEvent)
+    expect(bridge.selectTarget(beta.sessionID, true)).toContain("Beta")
+    stream.emit({ type: "session.execution.started", data: { sessionID: alpha.sessionID } })
+    stream.emit({ type: "session.execution.succeeded", data: { sessionID: alpha.sessionID } })
+    await Bun.sleep(0)
+    expect(bridge.status()).toContain("Beta is idle")
+    expect(bridge.status()).not.toContain("working")
+    bridge.close()
+  })
+
+  test("a permission reply stays on the session that asked", async () => {
+    const { bridge, permissions, replies } = routed()
+    permissions.set(alpha.sessionID, [{ id: "perm_a", action: "edit", resources: ["file.ts"] }])
+    bridge.replaceCatalog([alpha, beta])
+    bridge.selectTarget(beta.sessionID)
+    bridge.handle({ kind: "transcript", role: "user", text: "yes", final: true } as LiveEvent)
+    bridge.selectTarget(beta.sessionID, true)
+    expect(await bridge.permissions()).toContain("wants to edit file.ts")
+    expect(await bridge.replyPermission("perm_a", "once")).toContain("Alpha")
+    expect(replies).toEqual(["ses_a:perm_a"])
+    bridge.close()
+  })
+
+  test("re-selecting a missing target does not revive it", async () => {
+    const { bridge } = routed()
+    bridge.replaceCatalog([beta])
+    bridge.selectTarget(alpha.sessionID)
+    await expect(bridge.send("Inspect")).rejects.toThrow("is gone")
+    bridge.close()
+  })
+
+  test("a catalog arriving before the bridge is applied once and cleared", () => {
+    const call: {
+      bridge?: { replaceCatalog(targets: readonly CodingTarget[]): number }
+      pendingCatalog?: CodingTarget[]
+    } = {}
+    expect(stageCatalog(call, [alpha, beta])).toBe(2)
+    expect(call.pendingCatalog).toHaveLength(2)
+    call.bridge = { replaceCatalog: (targets) => targets.length }
+    expect(stageCatalog(call, [alpha])).toBe(1)
+    expect(call.pendingCatalog).toBeUndefined()
   })
 })

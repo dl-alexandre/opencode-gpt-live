@@ -613,6 +613,7 @@ export class Bridge {
   private async collectPermissions() {
     const sessionIDs = new Set<string>([
       this.mainSessionID,
+      ...this.catalog.map((target) => target.sessionID),
       ...[...this.tasks.values()]
         .filter((task) => task.status === "queued" || task.status === "running")
         .map((task) => task.sessionID),

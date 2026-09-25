@@ -79,6 +79,21 @@ export function selectCodingTarget(input: {
 }
 
 /** Keep same-project sessions. A missing current target stays named but is marked unavailable. */
+/** Holds a catalog that arrives before the bridge exists, then applies and clears it. */
+export function stageCatalog(
+  call: { bridge?: { replaceCatalog(targets: readonly CodingTarget[]): number }; pendingCatalog?: CodingTarget[] },
+  targets: readonly CodingTarget[],
+) {
+  const limited = targets.slice(0, 50)
+  if (!call.bridge) {
+    call.pendingCatalog = limited
+    return limited.length
+  }
+  const accepted = call.bridge.replaceCatalog(limited)
+  call.pendingCatalog = undefined
+  return accepted
+}
+
 export function acceptCatalog(current: CodingTarget, offered: readonly CodingTarget[]) {
   const catalog = offered.filter((item) => sameProject(current, item))
   const currentAvailable = offered.some((item) => item.sessionID === current.sessionID)
