@@ -427,7 +427,10 @@ export default Plugin.define({
               directory: ctx.location.directory,
             },
           )
-          if (entry.pendingCatalog) entry.bridge.replaceCatalog(entry.pendingCatalog)
+          if (entry.pendingCatalog) {
+            entry.bridge.replaceCatalog(entry.pendingCatalog)
+            entry.pendingCatalog = undefined
+          }
           emitState("live")
         }
         void joinControlChannel().catch((cause) =>
@@ -467,11 +470,12 @@ export default Plugin.define({
 
       catalog: async (input) => {
         if (!active || active.callID !== input.callID) return { accepted: 0 }
+        const targets = input.targets.slice(0, 50)
         if (!active.bridge) {
-          active.pendingCatalog = input.targets
-          return { accepted: input.targets.length }
+          active.pendingCatalog = targets
+          return { accepted: targets.length }
         }
-        return { accepted: active.bridge.replaceCatalog(input.targets) }
+        return { accepted: active.bridge.replaceCatalog(targets) }
       },
     })
 

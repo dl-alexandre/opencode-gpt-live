@@ -149,7 +149,7 @@ describe("delegated task outcomes", () => {
     stream.emit({ type: "session.execution.succeeded", data: { sessionID: "main" } })
     await settle()
 
-    expect(sideband.spoken).toEqual(['Finished the task "Task A". Outcome: A is done'])
+    expect(sideband.spoken).toEqual(['this session: Finished the task "Task A". Outcome: A is done'])
     expect(statuses).toContain("task_2:queued")
     expect(statuses).not.toContain("task_2:done")
 
@@ -159,8 +159,8 @@ describe("delegated task outcomes", () => {
     await settle()
 
     expect(sideband.spoken).toEqual([
-      'Finished the task "Task A". Outcome: A is done',
-      'Finished the task "Task B". Outcome: B is done',
+      'this session: Finished the task "Task A". Outcome: A is done',
+      'this session: Finished the task "Task B". Outcome: B is done',
     ])
     bridge.close()
   })
@@ -178,7 +178,7 @@ describe("delegated task outcomes", () => {
     await settle()
 
     expect(statuses).toEqual(["task_1:queued", "task_1:running", "task_1:failed"])
-    expect(sideband.spoken).toEqual(['The task "Inspect the project" failed: Model access is disabled'])
+    expect(sideband.spoken).toEqual(['this session: The task "Inspect the project" failed: Model access is disabled'])
     bridge.close()
   })
 

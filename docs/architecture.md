@@ -26,31 +26,32 @@ flowchart LR
 
 ## Repository map
 
-| Path                      | What lives there                                                                             |
-| ------------------------- | -------------------------------------------------------------------------------------------- |
-| `index.ts`                | Server plugin entry.                                                                         |
-| `tui.ts`                  | Terminal plugin entry. The only file that imports `@opentui/core` at runtime (see below).    |
-| `src/shared/rpc.ts`       | The `GptLive` RPC contract between the two plugins: methods, events and their schemas.       |
-| `src/server/index.ts`     | Server plugin: tools for the voice agent, the call lifecycle, voice-session continuity.      |
-| `src/server/live.ts`      | The GPT-Live wire contract: call creation, headers, the control WebSocket and its events.    |
-| `src/server/bridge.ts`    | Connects GPT-Live to OpenCode: hand-offs, coding-session updates, permissions, ending calls. |
-| `src/server/prompt.ts`    | Loads the system prompts: built-in section folders, user overrides, placeholders.            |
-| `src/server/prompts/`     | The prompts for GPT-Live and the voice agent, one Markdown file per section.                 |
-| `src/server/context.ts`   | Conversation history quoted as data, and agent text made speakable.                          |
-| `src/server/auth.ts`      | Reads OpenCode's ChatGPT OAuth sign-in.                                                      |
-| `src/server/log.ts`       | The per-call JSONL log.                                                                      |
-| `src/tui/index.ts`        | Terminal plugin: commands, keys, slots, starting calls.                                      |
-| `src/tui/controller.ts`   | Call state machine in the terminal, helper lifecycle, RPC events, heartbeats.                |
-| `src/tui/helper.ts`       | Finds, downloads (with checksum verification) and drives the native helper.                  |
-| `src/tui/ui.ts`           | The status strip, transcript panel, aura view, footer badge and the frame clock.             |
-| `src/tui/aura.ts`         | The aura renderer: RGBA frames from voice level and speaker.                                 |
-| `src/tui/surface.ts`      | Where frames are shown: kitty graphics, herdr's graphics API, or half-block text.            |
-| `src/tui/herdr.ts`        | herdr's `pane.graphics.stream` client.                                                       |
-| `native/src/main.rs`      | Helper entry and command loop.                                                               |
-| `native/src/transport.rs` | WebRTC peer: SDP offer/answer, Opus RTP, the data channel.                                   |
-| `native/src/audio/`       | Devices (CPAL), resampling, echo cancellation and noise suppression (sonora), Opus.          |
-| `native/src/duck.rs`      | Turning other apps' audio down during calls, per operating system.                           |
-| `scripts/`                | Release packaging, the headless end-to-end call, and the README aura renderer.               |
+| Path                      | What lives there                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------------------ |
+| `index.ts`                | Server plugin entry.                                                                             |
+| `tui.ts`                  | Terminal plugin entry. The only file that imports `@opentui/core` at runtime (see below).        |
+| `src/shared/rpc.ts`       | The `GptLive` RPC contract between the two plugins: methods, events and their schemas.           |
+| `src/server/index.ts`     | Server plugin: tools for the voice agent, the call lifecycle, voice-session continuity.          |
+| `src/server/live.ts`      | The GPT-Live wire contract: call creation, headers, the control WebSocket and its events.        |
+| `src/server/bridge.ts`    | Connects GPT-Live to OpenCode: hand-offs, the selected coding target, permissions, ending calls. |
+| `src/server/routing.ts`   | Same-project target selection, confirmation, and permission binding.                             |
+| `src/server/prompt.ts`    | Loads the system prompts: built-in section folders, user overrides, placeholders.                |
+| `src/server/prompts/`     | The prompts for GPT-Live and the voice agent, one Markdown file per section.                     |
+| `src/server/context.ts`   | Conversation history quoted as data, and agent text made speakable.                              |
+| `src/server/auth.ts`      | Reads OpenCode's ChatGPT OAuth sign-in.                                                          |
+| `src/server/log.ts`       | The per-call JSONL log.                                                                          |
+| `src/tui/index.ts`        | Terminal plugin: commands, keys, slots, starting calls.                                          |
+| `src/tui/controller.ts`   | Call state machine in the terminal, helper lifecycle, RPC events, heartbeats.                    |
+| `src/tui/helper.ts`       | Finds, downloads (with checksum verification) and drives the native helper.                      |
+| `src/tui/ui.ts`           | The status strip, transcript panel, aura view, footer badge and the frame clock.                 |
+| `src/tui/aura.ts`         | The aura renderer: RGBA frames from voice level and speaker.                                     |
+| `src/tui/surface.ts`      | Where frames are shown: kitty graphics, herdr's graphics API, or half-block text.                |
+| `src/tui/herdr.ts`        | herdr's `pane.graphics.stream` client.                                                           |
+| `native/src/main.rs`      | Helper entry and command loop.                                                                   |
+| `native/src/transport.rs` | WebRTC peer: SDP offer/answer, Opus RTP, the data channel.                                       |
+| `native/src/audio/`       | Devices (CPAL), resampling, echo cancellation and noise suppression (sonora), Opus.              |
+| `native/src/duck.rs`      | Turning other apps' audio down during calls, per operating system.                               |
+| `scripts/`                | Release packaging, the headless end-to-end call, and the README aura renderer.                   |
 
 ## Life of a call
 
@@ -69,10 +70,13 @@ flowchart LR
    contains `<conversation_since_last_message>`, `<coding_session_updates>` (what the main session did since the last
    hand-off) and `<request>`, plus `<call_started>` on the first one of a call. The voice agent answers in the first
    person; its reply goes back to GPT-Live to be spoken.
-7. **Work.** The voice agent's tools act on the main session implicitly (its ID is never in the prompt):
-   `gptlive_main_send` (queue or steer), `gptlive_main_status`, `gptlive_main_read`, `gptlive_main_stop`,
-   `gptlive_main_permissions`, `gptlive_main_permission_reply` and `gptlive_end_call`. They are hidden from every other
-   session. Permission requests in the main session are spoken to the user as they arrive.
+7. **Work.** The call has one selected coding target. It starts as the session where `/voice` was run, and focusing
+   another pane does not change it. `gptlive_targets` lists eligible sessions in the same project, and
+   `gptlive_select_target` switches only after the user confirms. That is an intentional change: session IDs and titles
+   are visible to the voice agent so it can name the target. The other tools act on the selected target:
+   `gptlive_main_send` (queue or steer), `gptlive_main_status`, `gptlive_main_read` and `gptlive_main_stop`.
+   In-flight work stays on the session that started it. Permission replies are bound to the session that asked, not to
+   whichever target is selected now. The tools are hidden from every other session.
 8. **End.** The user says "end the call" (the voice agent calls `gptlive_end_call`), runs `/voice`, or presses the
    key. The server closes the bridge and control channel and emits `closed`; the controller closes the helper, which
    restores other apps' audio.

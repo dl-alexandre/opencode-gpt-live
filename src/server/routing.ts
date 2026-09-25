@@ -3,12 +3,17 @@ export interface CodingTarget {
   sessionID: string
   title: string
   directory: string
+  projectID?: string
+  workspaceID?: string
 }
 
 export interface BoundPermission {
   id: string
   sessionID: string
   title: string
+  action?: string
+  resources?: readonly string[]
+  message?: string
 }
 
 export interface BusySession {
@@ -26,6 +31,14 @@ export function sameDirectory(left: string, right: string) {
   return !!left && !!right && normalizeDirectory(left) === normalizeDirectory(right)
 }
 
+/** Prefer project identity. Directory strings are only a fallback, so worktrees and /var aliases still match. */
+export function sameProject(left: CodingTarget, right: CodingTarget) {
+  if (left.projectID && right.projectID) {
+    return left.projectID === right.projectID && (left.workspaceID ?? "") === (right.workspaceID ?? "")
+  }
+  return sameDirectory(left.directory, right.directory)
+}
+
 /** Focusing another pane is not a target change. */
 export function retainTarget(current: CodingTarget, _focusedSessionID?: string) {
   return current
@@ -41,7 +54,7 @@ export function selectCodingTarget(input: {
   if (!target) {
     return { ok: false, reason: "That session is not available in this project. No target was changed." }
   }
-  if (!sameDirectory(input.current.directory, target.directory)) {
+  if (!sameProject(input.current, target)) {
     return {
       ok: false,
       reason: `Cannot control ${target.title}: it is in another project. No target was changed.`,
@@ -67,9 +80,9 @@ export function selectCodingTarget(input: {
 
 /** Keep same-project sessions. A missing current target stays named but is marked unavailable. */
 export function acceptCatalog(current: CodingTarget, offered: readonly CodingTarget[]) {
-  const catalog = offered.filter((item) => sameDirectory(current.directory, item.directory))
-  const currentAvailable = catalog.some((item) => item.sessionID === current.sessionID)
-  if (!currentAvailable) catalog.unshift(current)
+  const catalog = offered.filter((item) => sameProject(current, item))
+  const currentAvailable = offered.some((item) => item.sessionID === current.sessionID)
+  if (!catalog.some((item) => item.sessionID === current.sessionID)) catalog.unshift(current)
   return { catalog, currentAvailable }
 }
 

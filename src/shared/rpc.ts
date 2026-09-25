@@ -84,6 +84,8 @@ export const GptLive = define({
             sessionID: z.string(),
             title: z.string(),
             directory: z.string(),
+            projectID: z.string().optional(),
+            workspaceID: z.string().optional(),
           }),
         ),
       }),

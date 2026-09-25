@@ -145,7 +145,7 @@ export class VoiceController {
     return this.state.phase === "connecting" || this.state.phase === "live" || this.state.phase === "closing"
   }
 
-  /** Whether this session is part of the current call (the main or the voice session). */
+  /** Whether this session is the call's original session, its voice session, or the selected coding target. */
   owns(sessionID: string | undefined) {
     return (
       !!sessionID &&
@@ -168,14 +168,18 @@ export class VoiceController {
   async start(sessionID: string, voice?: Voice, fresh = false) {
     if (this.active || this.starting) return
     this.starting = true
-    const session = this.context.data.session.get(sessionID) as { location?: Location } | undefined
+    const session = this.context.data.session.get(sessionID) as
+      | {
+          title?: string
+          location?: Location
+        }
+      | undefined
     const location = session?.location ?? this.context.location ?? this.context.data.location.default()
-    const current = this.context.data.session.get(sessionID) as { title?: string; location?: Location } | undefined
     Object.assign(this.state, initial(), {
       phase: "connecting" as Phase,
       sessionID,
       targetSessionID: sessionID,
-      targetTitle: current?.title || "this session",
+      targetTitle: session?.title || "this session",
       location,
       startedAt: Date.now(),
       revision: this.state.revision,
@@ -260,6 +264,7 @@ export class VoiceController {
   }
 
   private pulse: ReturnType<typeof setInterval> | undefined
+  private catalogKey = ""
 
   /** Tells the server this window still owns the call, so abandoned calls get cleaned up. */
   private heartbeat(callID: string) {
@@ -277,21 +282,30 @@ export class VoiceController {
     const listed = (this.context.data.session.list() ?? []) as Array<{
       id?: string
       title?: string
-      location?: Location
+      parentID?: string
+      metadata?: { gptLive?: { role?: string } }
+      time?: { archived?: number }
+      projectID?: string
+      location?: Location & { projectID?: string; workspaceID?: string }
     }>
-    const targets = listed.flatMap((session) =>
-      session.id
-        ? [
-            {
-              sessionID: session.id,
-              title: session.title || "session",
-              directory: session.location?.directory ?? this.state.location?.directory ?? "",
-            },
-          ]
-        : [],
-    )
+    const targets = listed.flatMap((session) => {
+      if (!session.id || !session.location?.directory) return []
+      if (session.parentID || session.time?.archived || session.metadata?.gptLive?.role === "voice") return []
+      return [
+        {
+          sessionID: session.id,
+          title: session.title || "session",
+          directory: session.location.directory,
+          projectID: session.projectID ?? session.location.projectID,
+          workspaceID: session.location.workspaceID,
+        },
+      ]
+    })
+    const key = JSON.stringify(targets)
+    if (key === this.catalogKey) return
+    this.catalogKey = key
     await this.rpc()
-      .catalog({ callID, targets }, { location: this.state.location })
+      .catalog({ callID, targets: targets.slice(0, 50) }, { location: this.state.location })
       .catch(() => undefined)
   }
 

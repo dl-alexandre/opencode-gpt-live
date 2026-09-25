@@ -103,6 +103,8 @@ const TOOL_LABELS: Record<string, string> = {
   todowrite: "updating its plan",
   skill: "loading a skill",
   patch: "editing code",
+  gptlive_targets: "listing coding sessions",
+  gptlive_select_target: "switching the coding session",
   gptlive_main_send: "handing work to OpenCode",
   gptlive_main_status: "checking on OpenCode",
   gptlive_main_read: "reading the session",
@@ -150,6 +152,9 @@ export class Bridge {
   private targetAvailable = true
   private readonly pendingPermissions = new Map<string, BoundPermission>()
   private readonly sessionText = new Map<string, string>()
+  private readonly runs = new Map<string, { busy: boolean; label?: string; text: string; cancelRequested: boolean }>()
+  private pendingSwitch: { sessionID: string; turn: number } | undefined
+  private userTurns = 0
 
   constructor(
     private readonly ctx: Context,
@@ -179,6 +184,7 @@ export class Bridge {
       case "transcript":
         this.events.transcript(event.role, event.text, event.final)
         if (event.final && event.text.trim()) {
+          if (event.role === "user") this.userTurns += 1
           this.turns.push({ role: event.role, text: event.text.trim() })
           if (this.turns.length > 40) this.turns = this.turns.slice(-40)
           this.log?.write({ type: "turn", role: event.role, text: event.text.trim() })
@@ -291,43 +297,68 @@ export class Bridge {
 
   /** Replace the same-project catalog published by the terminal. Does not follow focus. */
   replaceCatalog(offered: readonly CodingTarget[]) {
-    const accepted = acceptCatalog(this.currentTarget, offered)
+    const eligible = offered.filter((item) => item.sessionID !== this.voiceSessionID)
+    const accepted = acceptCatalog(this.currentTarget, eligible)
     this.catalog = accepted.catalog
     this.targetAvailable = accepted.currentAvailable
-    return accepted.catalog.length
+    if (eligible.length > 0) this.dropGoneTasks(new Set(eligible.map((item) => item.sessionID)))
+    return this.catalog.filter((item) => this.targetAvailable || item.sessionID !== this.currentTarget.sessionID).length
   }
 
   /** Tool: switch the session that receives the next task. In-flight work stays put. */
   selectTarget(sessionID: string, confirmed = false): string {
+    if (sessionID === this.voiceSessionID) return "The voice session cannot be a coding target. No target was changed."
+    if (!confirmed) {
+      this.pendingSwitch = { sessionID, turn: this.userTurns }
+      const preview = selectCodingTarget({
+        current: this.currentTarget,
+        catalog: this.catalog,
+        sessionID,
+        confirmed: false,
+      })
+      return preview.ok ? preview.value.announcement : preview.reason
+    }
+    if (
+      !this.pendingSwitch ||
+      this.pendingSwitch.sessionID !== sessionID ||
+      this.userTurns <= this.pendingSwitch.turn
+    ) {
+      return "That switch is not confirmed. Ask the user, then confirm only after they agree."
+    }
     const selected = selectCodingTarget({
       current: this.currentTarget,
       catalog: this.catalog,
       sessionID,
-      confirmed,
+      confirmed: true,
     })
     if (!selected.ok) return selected.reason
     const previous = this.currentTarget
     this.currentTarget = selected.value.target
-    this.targetAvailable = true
+    this.pendingSwitch = undefined
     if (previous.sessionID !== this.currentTarget.sessionID) {
+      this.targetAvailable = true
+      this.showTargetActivity()
       this.events.target?.(this.currentTarget)
-      this.sideband.append(selected.value.announcement, "speakable")
       this.notifyVoice(selected.value.announcement)
     }
-    return selected.value.announcement
+    return `Target is ${this.currentTarget.title}. The user has already been told, so do not repeat the announcement.`
   }
 
   /** Tool: pending permission requests, each bound to the session that asked. */
   async permissions(): Promise<string> {
-    if (!this.pendingPermissions.size) return "The coding sessions have no pending permission requests."
-    return [...this.pendingPermissions.values()]
-      .map((request) => `- id ${request.id}: ${request.title} (${request.sessionID})`)
+    const requests = await this.collectPermissions()
+    if (!requests.length) return "The coding sessions have no pending permission requests."
+    return requests
+      .map(
+        (request) =>
+          `- id ${request.id}: ${request.title} wants to ${request.action} ${(request.resources ?? []).join(", ")}${request.message ? ` (${request.message})` : ""}`,
+      )
       .join("\n")
   }
 
   /** Tool: answer a pending permission in the session that asked for it. */
   async replyPermission(requestID: string, decision: "once" | "always" | "reject", message?: string) {
-    const bound = bindPermissionReply([...this.pendingPermissions.values()], requestID)
+    const bound = bindPermissionReply(await this.collectPermissions(), requestID)
     if (!bound.ok) return bound.reason
     await this.ctx.permission.reply({
       sessionID: bound.value.sessionID as never,
@@ -342,26 +373,38 @@ export class Bridge {
 
   /** Tool: describe what the main session is doing. */
   status(): string {
-    const queued = [...this.tasks.values()].filter((task) => task.status === "queued")
-    const running = [...this.tasks.values()].find((task) => task.status === "running")
+    const run = this.run(this.mainSessionID)
+    const own = [...this.tasks.values()].filter((task) => task.sessionID === this.mainSessionID)
+    const queued = own.filter((task) => task.status === "queued")
+    const running = own.find((task) => task.status === "running")
+    const elsewhere = [...this.tasks.values()].filter(
+      (task) => task.sessionID !== this.mainSessionID && (task.status === "queued" || task.status === "running"),
+    )
     const lines = [
-      this.mainBusy
-        ? `The main session is working${running ? ` on: ${clip(running.text, 200)}` : " on something the user typed"}.`
-        : "The main session is idle.",
-      this.mainBusy && this.mainLabel ? `Right now it is ${this.mainLabel}.` : undefined,
+      run.busy
+        ? `${this.currentTarget.title} is working${running ? ` on: ${clip(running.text, 200)}` : " on something the user typed"}.`
+        : `${this.currentTarget.title} is idle.`,
+      run.busy && run.label ? `Right now it is ${run.label}.` : undefined,
       queued.length ? `Queued tasks: ${queued.map((task) => clip(task.text, 80)).join("; ")}.` : undefined,
-      !this.mainBusy && this.mainText ? `Its last reply was: ${clip(speakable(this.mainText), 600)}` : undefined,
+      elsewhere.length
+        ? `Other sessions still have work: ${elsewhere.map((task) => `${this.titleFor(task.sessionID)}: ${clip(task.text, 60)}`).join("; ")}.`
+        : undefined,
+      !run.busy && run.text ? `Its last reply was: ${clip(speakable(run.text), 600)}` : undefined,
     ]
     return lines.filter(Boolean).join("\n")
   }
 
   /** Tool: interrupt one unambiguous coding session, or the session the user named. */
   async cancel(sessionID?: string): Promise<string> {
-    const busy = [...this.tasks.values()]
-      .filter((task) => task.status === "queued" || task.status === "running")
-      .map((task) => ({ sessionID: task.sessionID, title: this.titleFor(task.sessionID) }))
-    const resolved = resolveStop(busy, sessionID)
+    const busy = [...this.runs.entries()]
+      .filter(([, run]) => run.busy)
+      .map(([id]) => ({ sessionID: id, title: this.titleFor(id) }))
+    const resolved =
+      busy.length === 0
+        ? { ok: true as const, value: { sessionID: sessionID ?? this.mainSessionID } }
+        : resolveStop(busy, sessionID)
     if (!resolved.ok) return resolved.reason
+    this.run(resolved.value.sessionID).cancelRequested = true
     this.cancelRequested = true
     const result = await this.ctx.session
       .interrupt({ sessionID: resolved.value.sessionID as never, resume: false })
@@ -460,11 +503,14 @@ export class Bridge {
         const requestID = String(data.id)
         this.pendingPermissions.set(requestID, { id: requestID, sessionID, title })
         const resources = Array.isArray(data.resources) ? data.resources.join(", ") : ""
-        const spoken = `${title} needs permission to ${String(data.action ?? "continue")}${resources ? ` ${clip(resources, 160)}` : ""}. Ask whether to allow it once, always, or reject it. Request id: ${requestID}.`
+        const spoken = `${title} needs permission to ${String(data.action ?? "continue")}${resources ? ` ${clip(resources, 160)}` : ""}. Ask whether to allow it once, always, or reject it.`
         this.sideband.append(spoken, "speakable")
-        this.notifyVoice(spoken)
+        this.notifyVoice(`${spoken} Request id: ${requestID}.`)
         return
       }
+      case "permission.replied":
+        this.pendingPermissions.delete(String(data.id))
+        return
       case "session.inbox.delivered": {
         const task = [...this.tasks.values()].find((item) => item.inboxID === data.inboxID)
         if (task && task.status === "queued") this.setStatus(task, "running")
@@ -474,23 +520,24 @@ export class Bridge {
         const sessionID = String(data.sessionID)
         this.sessionText.delete(sessionID)
         this.promoteQueued(sessionID)
-        if (sessionID !== this.mainSessionID) return
-        this.mainBusy = true
-        this.mainText = ""
-        this.mainLabel = "thinking"
-        this.cancelRequested = false
-        this.events.activity("main", true, this.mainLabel)
+        const run = this.run(sessionID)
+        run.busy = true
+        run.label = "thinking"
+        run.text = ""
+        run.cancelRequested = false
+        if (sessionID === this.mainSessionID) this.showTargetActivity()
         return
       }
       case "session.tool.input.started":
-        if (typeof data.name !== "string" || String(data.sessionID) !== this.mainSessionID) return
-        this.mainLabel = toolLabel(data.name)
-        this.events.activity("main", true, this.mainLabel)
+        if (typeof data.name !== "string") return
+        this.run(String(data.sessionID)).label = toolLabel(data.name)
+        if (String(data.sessionID) === this.mainSessionID) this.showTargetActivity()
         return
       case "session.text.ended":
-        if (typeof data.text === "string" && data.text.trim()) this.sessionText.set(String(data.sessionID), data.text)
-        if (String(data.sessionID) === this.mainSessionID && typeof data.text === "string" && data.text.trim())
-          this.mainText = data.text
+        if (typeof data.text === "string" && data.text.trim()) {
+          this.sessionText.set(String(data.sessionID), data.text)
+          this.run(String(data.sessionID)).text = data.text
+        }
         return
       case "session.execution.succeeded":
         this.finishMain(String(data.sessionID), "done")
@@ -528,25 +575,85 @@ export class Bridge {
   }
 
   private finishMain(sessionID: string, outcome: "done" | "failed" | "cancelled", error?: string) {
-    if (sessionID === this.mainSessionID) {
-      this.mainBusy = false
-      this.mainLabel = undefined
-      this.events.activity("main", false)
-    }
+    const run = this.run(sessionID)
+    run.busy = false
+    run.label = undefined
+    if (sessionID === this.mainSessionID) this.showTargetActivity()
     const title = this.titleFor(sessionID)
     const outcomes = taskOutcomes(
       [...this.tasks.values()].filter((task) => task.sessionID === sessionID),
       outcome,
       {
         error,
-        result: speakable(this.sessionText.get(sessionID) ?? ""),
-        cancelledByUser: this.cancelRequested,
+        result: speakable(this.sessionText.get(sessionID) ?? run.text),
+        cancelledByUser: run.cancelRequested,
       },
-    ).map((item) => ({
-      ...item,
-      spoken: item.spoken ? `${title}: ${item.spoken}` : undefined,
-    }))
+    )
+    for (const item of outcomes) if (item.spoken) item.spoken = `${title}: ${item.spoken}`
     this.applyOutcomes(outcomes)
+  }
+
+  private run(sessionID: string) {
+    let run = this.runs.get(sessionID)
+    if (!run) {
+      run = { busy: false, text: "", cancelRequested: false }
+      this.runs.set(sessionID, run)
+    }
+    return run
+  }
+
+  private showTargetActivity() {
+    const run = this.run(this.mainSessionID)
+    this.mainBusy = run.busy
+    this.mainLabel = run.label
+    this.mainText = run.text
+    this.events.activity("main", run.busy, run.busy ? run.label : undefined)
+  }
+
+  private async collectPermissions() {
+    const sessionIDs = new Set<string>([
+      this.mainSessionID,
+      ...[...this.tasks.values()]
+        .filter((task) => task.status === "queued" || task.status === "running")
+        .map((task) => task.sessionID),
+    ])
+    const requests: BoundPermission[] = []
+    const listedBySession = await Promise.all(
+      [...sessionIDs].map(async (sessionID) => ({
+        sessionID,
+        listed: (await this.ctx.permission.list({ sessionID: sessionID as never }).catch(() => [])) as readonly {
+          id: string
+          action?: string
+          resources?: readonly string[]
+          message?: string
+        }[],
+      })),
+    )
+    for (const { sessionID, listed } of listedBySession) {
+      for (const request of listed) {
+        requests.push({
+          id: request.id,
+          sessionID,
+          title: this.titleFor(sessionID),
+          action: request.action ?? "continue",
+          resources: request.resources ?? [],
+          message: request.message,
+        })
+      }
+    }
+    this.pendingPermissions.clear()
+    for (const request of requests) this.pendingPermissions.set(request.id, request)
+    return requests
+  }
+
+  private dropGoneTasks(present: ReadonlySet<string>) {
+    for (const task of this.tasks.values()) {
+      if (task.status !== "queued" && task.status !== "running") continue
+      if (present.has(task.sessionID)) continue
+      this.setStatus(task, "failed", "session gone")
+      this.run(task.sessionID).busy = false
+      this.announce(`${this.titleFor(task.sessionID)} is gone, so work on "${clip(task.text, 80)}" will not finish.`)
+    }
   }
 
   private applyOutcomes(outcomes: readonly SpokenOutcome[]) {
