@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, jest, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import path from "node:path"
 
@@ -119,6 +119,15 @@ async function settle() {
   await Bun.sleep(0)
 }
 
+/** Lets queued promise callbacks run without relying on timers, which may be faked. */
+async function flush() {
+  for (let turn = 0; turn < 10; turn++) {
+    // Each turn drains one round of promise callbacks; the rounds are sequential by design.
+    // oxlint-disable-next-line no-await-in-loop
+    await Promise.resolve()
+  }
+}
+
 describe("delegated task outcomes", () => {
   test("a rejected prompt is spoken once and emits a failed status", async () => {
     const { bridge, sideband, statuses, prompt } = harness()
@@ -182,21 +191,76 @@ describe("delegated task outcomes", () => {
     bridge.close()
   })
 
-  test("a lost event stream reports open tasks once and ends the call", async () => {
+  test("a queued task the user removes is not reported with another run's result", async () => {
+    const { bridge, sideband, statuses, stream, prompt } = harness()
+    const pending = bridge.send("Refactor the parser")
+    prompt().resolve({ id: "inbox_1" })
+    await pending
+    stream.emit({ type: "session.inbox.cancelled", data: { sessionID: "main", inboxID: "inbox_1" } })
+    stream.emit({ type: "session.execution.started", data: { sessionID: "main" } })
+    stream.emit({ type: "session.text.ended", data: { sessionID: "main", text: "All 57 tests pass" } })
+    stream.emit({ type: "session.execution.succeeded", data: { sessionID: "main" } })
+    await settle()
+
+    expect(statuses).toEqual(["task_1:queued", "task_1:cancelled"])
+    expect(sideband.spoken).toEqual([])
+    bridge.close()
+  })
+
+  test("a task whose prompt is still pending does not take another run's result", async () => {
+    const { bridge, sideband, statuses, stream, prompt } = harness()
+    const pending = bridge.send("Inspect the project")
+    stream.emit({ type: "session.execution.started", data: { sessionID: "main" } })
+    stream.emit({ type: "session.text.ended", data: { sessionID: "main", text: "Typed work is done" } })
+    stream.emit({ type: "session.execution.succeeded", data: { sessionID: "main" } })
+    await settle()
+    prompt().reject(new Error("Model access is disabled"))
+    await pending
+
+    expect(statuses).toEqual(["task_1:queued", "task_1:failed"])
+    expect(sideband.spoken).toEqual([
+      'The task "Inspect the project" failed before it started: Model access is disabled',
+    ])
+    bridge.close()
+  })
+
+  test("a lost event stream reports open tasks once and ends the call after it is spoken", async () => {
     const { bridge, sideband, statuses, stream, prompt, ended } = harness()
     const pending = bridge.send("Inspect the project")
     prompt().resolve({ id: "inbox_1" })
     await pending
-    stream.end()
-    await settle()
+    jest.useFakeTimers()
+    try {
+      stream.end()
+      await flush()
 
-    expect(sideband.spoken).toEqual([
-      'Lost track of the task "Inspect the project" when the OpenCode event stream disconnected. Its result is unknown.',
-    ])
-    expect(statuses).toContain("task_1:failed")
-    expect(ended()).toContain("Lost the OpenCode event stream")
-    await expect(bridge.send("Again")).rejects.toThrow("event stream is gone")
-    expect(sideband.spoken).toHaveLength(1)
-    bridge.close()
+      expect(sideband.spoken).toEqual([
+        'Lost track of the task "Inspect the project" when the OpenCode event stream disconnected. Its result is unknown.',
+      ])
+      expect(statuses).toContain("task_1:failed")
+      await expect(bridge.send("Again")).rejects.toThrow("event stream is gone")
+      expect(bridge.endCall()).toBe("The call is already ending.")
+      expect(ended()).toBe("")
+      jest.advanceTimersByTime(4_500)
+      expect(ended()).toContain("Lost the OpenCode event stream")
+      expect(sideband.spoken).toHaveLength(1)
+    } finally {
+      jest.useRealTimers()
+      bridge.close()
+    }
+  })
+
+  test("closing the call before the lost-stream hang-up cancels it", async () => {
+    const { bridge, stream, ended } = harness()
+    jest.useFakeTimers()
+    try {
+      stream.end()
+      await flush()
+      bridge.close()
+      jest.advanceTimersByTime(4_500)
+      expect(ended()).toBe("")
+    } finally {
+      jest.useRealTimers()
+    }
   })
 })

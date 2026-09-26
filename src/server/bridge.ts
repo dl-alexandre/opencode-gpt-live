@@ -133,6 +133,7 @@ export class Bridge {
   private updates: string[] = []
   private introduced = false
   private streamLost = false
+  private lostTimer: ReturnType<typeof setTimeout> | undefined
 
   constructor(
     private readonly ctx: Context,
@@ -327,7 +328,9 @@ export class Bridge {
     this.streamLost = true
     this.events.error(`Lost the OpenCode event stream: ${reason}`)
     this.applyOutcomes(taskOutcomes([...this.tasks.values()], "lost", { includeQueued: true }))
-    this.events.end(`Lost the OpenCode event stream: ${reason}`)
+    // Hang up only after GPT-Live has had time to say what happened, as endCall does.
+    this.ending = true
+    this.lostTimer = setTimeout(() => this.events.end(`Lost the OpenCode event stream: ${reason}`), 4_500)
   }
 
   private onVoiceEvent(type: string, data: Record<string, unknown>) {
@@ -387,6 +390,14 @@ export class Bridge {
         if (task && task.status === "queued") this.setStatus(task, "running")
         return
       }
+      case "session.inbox.cancelled": {
+        // The user removed a waiting voice task (e.g. from the queued prompts list); it will never run.
+        const task = [...this.tasks.values()].find((item) => item.inboxID === data.inboxID)
+        if (!task || (task.status !== "queued" && task.status !== "running")) return
+        this.setStatus(task, "cancelled")
+        this.notifyVoice(`The task "${clip(task.text, 120)}" was removed from the queue before it ran.`)
+        return
+      }
       case "session.execution.started":
         this.promoteQueued()
         this.mainBusy = true
@@ -422,10 +433,14 @@ export class Bridge {
     this.announce(`The task "${clip(task.text, 120)}" failed before it started: ${clip(error, 300)}`)
   }
 
-  /** A run can start before inbox delivery. Promote the next queued task only when nothing is already running. */
+  /**
+   * A run can start before inbox delivery. Promote the next queued task only when nothing is already running, and only
+   * one OpenCode has accepted: a task whose prompt is still pending may yet be rejected, and must not take another
+   * run's result.
+   */
   private promoteQueued() {
     if ([...this.tasks.values()].some((task) => task.status === "running")) return
-    const next = [...this.tasks.values()].find((task) => task.status === "queued")
+    const next = [...this.tasks.values()].find((task) => task.status === "queued" && task.inboxID)
     if (next) this.setStatus(next, "running")
   }
 
@@ -481,6 +496,7 @@ export class Bridge {
   close() {
     if (this.closed) return
     this.closed = true
+    clearTimeout(this.lostTimer)
     this.abort.abort()
     this.sideband.close()
   }
